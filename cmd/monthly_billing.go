@@ -7,44 +7,55 @@ import (
 	"database/sql"
 	"math"
 	"strconv"
+
+	helpers "github.com/Lineblocs/go-helpers"
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/mailgun/mailgun-go/v4"
 	"github.com/sirupsen/logrus"
-
-	//now "github.com/jinzhu/now"
-
-	helpers "github.com/Lineblocs/go-helpers"
-	utils "lineblocs.com/crontabs/utils"
 	models "lineblocs.com/crontabs/models"
+	"lineblocs.com/crontabs/repository"
+	utils "lineblocs.com/crontabs/utils"
 )
 
+type MonthlyBillingJob struct {
+	workspaceRepository repository.WorkspaceRepository
+	paymentRepository   repository.PaymentRepository
+	db                  *sql.DB
+}
 
-// cron tab to remove unset password users
-func MonthlyBilling() error {
+func NewMonthlyBillingJob(db *sql.DB, worskpaceRepository repository.WorkspaceRepository, paymentRepository repository.PaymentRepository) *MonthlyBillingJob {
+	return &MonthlyBillingJob{
+		db:                  db,
+		workspaceRepository: worskpaceRepository,
+		paymentRepository:   paymentRepository,
+	}
+}
+
+// cron tab to run monthly billing
+func (mb *MonthlyBillingJob) MonthlyBilling() error {
 	var id int
 	var creatorId int
 
-	db, err := utils.GetDBConnection()
+	conn := utils.NewDBConn(mb.db)
+
+	billingParams, err := conn.GetBillingParams()
 	if err != nil {
 		return err
 	}
-	billingParams, err := utils.GetBillingParams()
-	if err != nil {
-		return err
-	}
+
 	start := time.Now()
 	start = start.AddDate(0, -1, 0)
 	end := time.Now()
 	currentTime := time.Now()
-	startFormatted := start.Format("2006-01-02 15:04:05")
-	endFormatted := end.Format("2006-01-02 15:04:05")
-	results, err := db.Query("SELECT id, creator_id FROM workspaces")
+	startFormatted := start.Format(time.DateTime)
+	endFormatted := end.Format(time.DateTime)
+	results, err := mb.db.Query("SELECT id, creator_id FROM workspaces")
 	if err != nil {
 		helpers.Log(logrus.ErrorLevel, "error running query..\r\n")
 		helpers.Log(logrus.ErrorLevel, err.Error())
 		return err
 	}
-	plans, err := helpers.GetServicePlans()
+	plans, err := mb.paymentRepository.GetServicePlans()
 	if err != nil {
 		helpers.Log(logrus.ErrorLevel, "error getting service plans\r\n")
 		helpers.Log(logrus.ErrorLevel, err.Error())
@@ -53,62 +64,28 @@ func MonthlyBilling() error {
 
 	defer results.Close()
 	for results.Next() {
-		err = results.Scan(&id, &creatorId)
-		workspace, err := helpers.GetWorkspaceFromDB(id)
+		_ = results.Scan(&id, &creatorId)
+		workspace, err := mb.workspaceRepository.GetWorkspaceFromDB(id)
 		if err != nil {
 			helpers.Log(logrus.ErrorLevel, "error getting workspace ID: "+strconv.Itoa(id)+"\r\n")
 			continue
 		}
-		user, err := helpers.GetUserFromDB(creatorId)
+		user, err := mb.workspaceRepository.GetUserFromDB(creatorId)
 		if err != nil {
 			helpers.Log(logrus.ErrorLevel, "error getting user ID: "+strconv.Itoa(id)+"\r\n")
 			continue
 		}
 
-		var plan *helpers.ServicePlan
-		for _, target := range plans {
-			if target.Name == workspace.Plan {
-				plan = &target
-				break
-			}
-		}
-		if plan == nil {
-			helpers.Log(logrus.InfoLevel, "No plan found for user..\r\n")
-			continue
-		}
-		billingInfo, err := helpers.GetWorkspaceBillingInfo(workspace)
+		plan := utils.GetPlan(plans, workspace)
+
+		billingInfo, err := mb.workspaceRepository.GetWorkspaceBillingInfo(workspace)
 		if err != nil {
 			helpers.Log(logrus.ErrorLevel, "Could not get billing info..\r\n")
 			helpers.Log(logrus.ErrorLevel, err.Error())
 			continue
 		}
 
-		var didId int
-		var monthlyCosts int
-		results1, err := db.Query("SELECT id, monthly_cost  FROM did_numbers WHERE workspace_id = ?", workspace.Id)
-		if err != sql.ErrNoRows && err != nil {
-			helpers.Log(logrus.ErrorLevel, "Could not get dids info..\r\n")
-			helpers.Log(logrus.ErrorLevel, err.Error())
-			continue
-		}
-		defer results1.Close()
-		for results1.Next() {
-			results1.Scan(&didId, &monthlyCosts)
-			stmt, err := db.Prepare("INSERT INTO users_debits (`source`, `status`, `cents`, `module_id`, `user_id`, `workspace_id`, `created_at`) VALUES ( ?, ?, ?, ?, ?, ?)")
-			if err != nil {
-				helpers.Log(logrus.ErrorLevel, "could not prepare query..\r\n")
-				helpers.Log(logrus.ErrorLevel, err.Error())
-				continue
-			}
-
-			defer stmt.Close()
-			_, err = stmt.Exec("NUMBER_RENTAL", "INCOMPLETE", monthlyCosts, didId, user.Id, workspace.Id, start)
-			if err != nil {
-				helpers.Log(logrus.ErrorLevel, "error creating number rental debit..\r\n")
-				continue
-			}
-
-		}
+		utils.CreateMonthlyNumberRentalDebit(mb.db, workspace.Id, user.Id, start)
 
 		baseCosts, err := helpers.GetBaseCosts()
 		if err != nil {
@@ -117,21 +94,7 @@ func MonthlyBilling() error {
 			continue
 		}
 
-		// get the amount of users in this workspace
-		rows, err := db.Query("SELECT COUNT(*) as count FROM  workspaces_users WHERE workspace_id = ?", workspace.Id)
-		if err != nil {
-			helpers.Log(logrus.ErrorLevel, "error getting workspace user count.\r\n")
-			helpers.Log(logrus.ErrorLevel, err.Error())
-			continue
-		}
-		rows.Close()
-
-		userCount, err := utils.CheckRowCount(rows)
-		if err != nil {
-			helpers.Log(logrus.ErrorLevel, "error getting workspace user count.\r\n")
-			helpers.Log(logrus.ErrorLevel, err.Error())
-			continue
-		}
+		userCount := utils.GetWorkspaceUserCount(mb.db, workspace.Id)
 		helpers.Log(logrus.InfoLevel, fmt.Sprintf("Workspace total user count %d", userCount))
 
 		totalCosts := 0.0
@@ -144,7 +107,7 @@ func MonthlyBilling() error {
 
 		helpers.Log(logrus.InfoLevel, fmt.Sprintf("Workspace total membership costs is %f", membershipCosts))
 
-		results2, err := db.Query("SELECT id, source, module_id, cents, created_at FROM users_debits WHERE user_id = ? AND created_at BETWEEN ? AND ?", workspace.CreatorId, startFormatted, endFormatted)
+		results2, err := mb.db.Query("SELECT id, source, module_id, cents, created_at FROM users_debits WHERE user_id = ? AND created_at BETWEEN ? AND ?", workspace.CreatorId, startFormatted, endFormatted)
 		if err != nil {
 			helpers.Log(logrus.ErrorLevel, "error running query..\r\n")
 			helpers.Log(logrus.ErrorLevel, err.Error())
@@ -165,7 +128,7 @@ func MonthlyBilling() error {
 			switch source {
 			case "CALL":
 				helpers.Log(logrus.InfoLevel, fmt.Sprintf("getting call %d\r\n", moduleId))
-				call, err := helpers.GetCallFromDB(moduleId)
+				call, err := mb.workspaceRepository.GetCallFromDB(moduleId)
 				if err != nil {
 					helpers.Log(logrus.ErrorLevel, "error running query..\r\n")
 					helpers.Log(logrus.ErrorLevel, err.Error())
@@ -185,7 +148,7 @@ func MonthlyBilling() error {
 
 			case "NUMBER_RENTAL":
 				helpers.Log(logrus.InfoLevel, fmt.Sprintf("getting DID %d\r\n", moduleId))
-				did, err := helpers.GetDIDFromDB(moduleId)
+				did, err := mb.workspaceRepository.GetDIDFromDB(moduleId)
 				if err != nil {
 					helpers.Log(logrus.ErrorLevel, "error running query..\r\n")
 					helpers.Log(logrus.ErrorLevel, err.Error())
@@ -195,7 +158,7 @@ func MonthlyBilling() error {
 				monthlyNumberRentals += float64(did.MonthlyCost)
 			}
 		}
-		results3, err := db.Query("SELECT id, size, created_at FROM recordings WHERE user_id = ? AND created_at BETWEEN ? AND ?", workspace.CreatorId, startFormatted, endFormatted)
+		results3, err := mb.db.Query("SELECT id, size, created_at FROM recordings WHERE user_id = ? AND created_at BETWEEN ? AND ?", workspace.CreatorId, startFormatted, endFormatted)
 		if err != sql.ErrNoRows && err != nil {
 			helpers.Log(logrus.ErrorLevel, "error running query..\r\n")
 			helpers.Log(logrus.ErrorLevel, err.Error())
@@ -210,15 +173,15 @@ func MonthlyBilling() error {
 			cents := math.Round(baseCosts.RecordingsPerByte * float64(size))
 			charge, err := utils.ComputeAmountToCharge(cents, usedMonthlyRecordings, size)
 			if err != nil {
-				helpers.Log(logrus.ErrorLevel, "error getting charge..\r\n")
+				helpers.Log(logrus.ErrorLevel, "error calculating charge amount\r\n")
 				helpers.Log(logrus.ErrorLevel, err.Error())
 				continue
 			}
 			recordingCosts += charge
 			usedMonthlyRecordings -= size
-
 		}
-		results4, err := db.Query("SELECT id, created_at FROM faxes WHERE workspace_id = ? AND created_at BETWEEN ? AND ?", workspace.Id, startFormatted, endFormatted)
+
+		results4, err := mb.db.Query("SELECT id, created_at FROM faxes WHERE workspace_id = ? AND created_at BETWEEN ? AND ?", workspace.Id, startFormatted, endFormatted)
 		if err != sql.ErrNoRows && err != nil {
 			helpers.Log(logrus.ErrorLevel, "error running query..\r\n")
 			helpers.Log(logrus.ErrorLevel, err.Error())
@@ -228,18 +191,18 @@ func MonthlyBilling() error {
 		var faxId int
 		for results4.Next() {
 			results4.Scan(&faxId, &createdAt)
-			totalFax := float64( plan.Fax )
+			totalFax := float64(plan.Fax)
 			centsForFax := baseCosts.FaxPerUsed
 			charge, err := utils.ComputeAmountToCharge(centsForFax, float64(usedMonthlyFax), totalFax)
 			if err != nil {
-				helpers.Log(logrus.ErrorLevel, "error getting charge..\r\n")
+				helpers.Log(logrus.ErrorLevel, "error calculating charge amount\r\n")
 				helpers.Log(logrus.ErrorLevel, err.Error())
 				continue
 			}
 			faxCosts += charge
 			usedMonthlyFax -= 1
-
 		}
+
 		totalCosts += membershipCosts
 		totalCosts += callTolls
 		totalCosts += recordingCosts
@@ -255,7 +218,7 @@ func MonthlyBilling() error {
 			totalCosts))
 
 		helpers.Log(logrus.InfoLevel, fmt.Sprintf("Creating invoice for user %d, on workspace %d, plan type %s\r\n", user.Id, workspace.Id, workspace.Plan))
-		stmt, err := db.Prepare("INSERT INTO users_invoices (`cents`, `call_costs`, `recording_costs`, `fax_costs`, `membership_costs`, `number_costs`, `status`, `user_id`, `workspace_id`, `created_at`, `updated_at`) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		stmt, err := mb.db.Prepare("INSERT INTO users_invoices (`cents`, `call_costs`, `recording_costs`, `fax_costs`, `membership_costs`, `number_costs`, `status`, `user_id`, `workspace_id`, `created_at`, `updated_at`) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 		if err != nil {
 			helpers.Log(logrus.ErrorLevel, "could not prepare query..\r\n")
 			helpers.Log(logrus.ErrorLevel, err.Error())
@@ -275,14 +238,14 @@ func MonthlyBilling() error {
 			continue
 		}
 		helpers.Log(logrus.InfoLevel, fmt.Sprintf("Charging user %d, on workspace %d, plan type %s\r\n", user.Id, workspace.Id, workspace.Plan))
+
 		// try to charge the debit
-		//if workspace.Plan == "pay-as-you-go" {
 		if plan.PayAsYouGo {
 			remainingBalance := billingInfo.RemainingBalanceCents
 			minRemaining := remainingBalance - totalCosts
 			charge, err := utils.ComputeAmountToCharge(totalCosts, remainingBalance, minRemaining)
 			if err != nil {
-				helpers.Log(logrus.ErrorLevel, "error getting charge..\r\n")
+				helpers.Log(logrus.ErrorLevel, "error calculating charge amount\r\n")
 				helpers.Log(logrus.ErrorLevel, err.Error())
 
 				continue
@@ -292,11 +255,11 @@ func MonthlyBilling() error {
 
 				confNumber, err := utils.CreateInvoiceConfirmationNumber()
 				if err != nil {
-					helpers.Log(logrus.ErrorLevel, "error while generating confirmation number: " + err.Error())
+					helpers.Log(logrus.ErrorLevel, "error while generating confirmation number: "+err.Error())
 					continue
 				}
 
-				stmt, err := db.Prepare("UPDATE users_invoices SET status = 'COMPLETE', source ='CREDITS', cents_collected = ?, confirmation_number = ? WHERE id = ?")
+				stmt, err := mb.db.Prepare("UPDATE users_invoices SET status = 'COMPLETE', source ='CREDITS', cents_collected = ?, confirmation_number = ? WHERE id = ?")
 				if err != nil {
 					helpers.Log(logrus.ErrorLevel, "could not prepare query..\r\n")
 					continue
@@ -310,7 +273,7 @@ func MonthlyBilling() error {
 			} else {
 				helpers.Log(logrus.InfoLevel, "User does not have enough credits. Charging any payment sources\r\n")
 				// update debit to reflect exactly how much we can charge
-				stmt, err := db.Prepare("UPDATE users_invoices SET status = 'INCOMPLETE', source ='CREDITS', cents_collected = ? WHERE id = ?")
+				stmt, err := mb.db.Prepare("UPDATE users_invoices SET status = 'INCOMPLETE', source ='CREDITS', cents_collected = ? WHERE id = ?")
 				if err != nil {
 					helpers.Log(logrus.ErrorLevel, "could not prepare query..\r\n")
 					continue
@@ -326,14 +289,14 @@ func MonthlyBilling() error {
 
 				cents := int(math.Ceil(charge))
 				invoice := models.UserInvoice{
-					Id: int(invoiceId),
-					Cents: cents,
-					InvoiceDesc: invoiceDesc }
-				err = utils.ChargeCustomer(db, billingParams, user, workspace, &invoice)
+					Id:          int(invoiceId),
+					Cents:       cents,
+					InvoiceDesc: invoiceDesc}
+				err = mb.paymentRepository.ChargeCustomer(billingParams, user, workspace, &invoice)
 				if err != nil {
 					// could not charge card.
 					// update invoice record and mark as outstanding
-					stmt, err = db.Prepare("UPDATE users_invoices SET source = 'CARD', status = 'INCOMPLETE', num_attempts = 1, last_attempted = ? WHERE id = ?")
+					stmt, err = mb.db.Prepare("UPDATE users_invoices SET source = 'CARD', status = 'INCOMPLETE', num_attempts = 1, last_attempted = ? WHERE id = ?")
 					if err != nil {
 						helpers.Log(logrus.ErrorLevel, "could not prepare query..\r\n")
 						continue
@@ -346,7 +309,7 @@ func MonthlyBilling() error {
 					}
 					continue
 				}
-				stmt, err = db.Prepare("UPDATE users_invoices SET status = 'COMPLETE', source ='CARD', cents_collected = ?, last_attempted = ?, num_attempts = 1 WHERE id = ?")
+				stmt, err = mb.db.Prepare("UPDATE users_invoices SET status = 'COMPLETE', source ='CARD', cents_collected = ?, last_attempted = ?, num_attempts = 1 WHERE id = ?")
 				if err != nil {
 					helpers.Log(logrus.ErrorLevel, "could not prepare query..\r\n")
 					continue
@@ -357,21 +320,20 @@ func MonthlyBilling() error {
 					helpers.Log(logrus.ErrorLevel, err.Error())
 					continue
 				}
-
 			}
 		} else {
 			// regular membership charge. only try to charge a card
 			helpers.Log(logrus.InfoLevel, "Charging recurringly with card..\r\n")
 			cents := int(math.Ceil(totalCosts))
 			invoice := models.UserInvoice{
-				Id: int(invoiceId),
-				Cents: cents,
-				InvoiceDesc: invoiceDesc }
-			err := utils.ChargeCustomer(db, billingParams, user, workspace, &invoice)
+				Id:          int(invoiceId),
+				Cents:       cents,
+				InvoiceDesc: invoiceDesc}
+			err := mb.paymentRepository.ChargeCustomer(billingParams, user, workspace, &invoice)
 			if err != nil {
 				helpers.Log(logrus.ErrorLevel, "error charging user..\r\n")
 				helpers.Log(logrus.ErrorLevel, err.Error())
-				stmt, err := db.Prepare("UPDATE users_invoices SET status = 'INCOMPLETE', source = 'CARD', cents_collected = 0.0 WHERE id = ?")
+				stmt, err := mb.db.Prepare("UPDATE users_invoices SET status = 'INCOMPLETE', source = 'CARD', cents_collected = 0.0 WHERE id = ?")
 				if err != nil {
 					helpers.Log(logrus.ErrorLevel, "could not prepare query..\r\n")
 					continue
@@ -388,11 +350,11 @@ func MonthlyBilling() error {
 
 			confNumber, err := utils.CreateInvoiceConfirmationNumber()
 			if err != nil {
-				helpers.Log(logrus.ErrorLevel, "error while generating confirmation number: " + err.Error())
+				helpers.Log(logrus.ErrorLevel, "error while generating confirmation number: "+err.Error())
 				continue
 			}
 
-			stmt, err := db.Prepare("UPDATE users_invoices SET status = 'COMPLETE', source ='CARD', cents_collected = ?, confirmation_number = ? WHERE id = ?")
+			stmt, err := mb.db.Prepare("UPDATE users_invoices SET status = 'COMPLETE', source ='CARD', cents_collected = ?, confirmation_number = ? WHERE id = ?")
 			if err != nil {
 				helpers.Log(logrus.ErrorLevel, "could not prepare query..\r\n")
 				continue
@@ -403,7 +365,6 @@ func MonthlyBilling() error {
 				helpers.Log(logrus.ErrorLevel, err.Error())
 				continue
 			}
-
 		}
 	}
 	return nil

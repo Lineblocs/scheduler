@@ -7,7 +7,6 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/mailgun/mailgun-go/v4"
 	"github.com/sirupsen/logrus"
-
 	utils "lineblocs.com/crontabs/utils"
 )
 
@@ -24,7 +23,7 @@ func RemoveLogs() error {
 	dateFormatted := dateNow.Format("2006-01-02 15:04:05")
 	_, err = db.Exec("DELETE from debugger_logs where created_at >= ?", dateFormatted)
 	if err != nil {
-		helpers.Log(logrus.ErrorLevel, "error occured in log removing\r\n")
+		helpers.Log(logrus.ErrorLevel, "error occurred in log removing\r\n")
 		helpers.Log(logrus.ErrorLevel, err.Error())
 		return err
 	}

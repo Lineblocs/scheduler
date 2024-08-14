@@ -8,17 +8,14 @@ import (
 	"math"
 	"strconv"
 
+	helpers "github.com/Lineblocs/go-helpers"
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/mailgun/mailgun-go/v4"
 	"github.com/sirupsen/logrus"
-
-	//now "github.com/jinzhu/now"
-
-	helpers "github.com/Lineblocs/go-helpers"
 	utils "lineblocs.com/crontabs/utils"
 )
 
-func notifyForCardExpiry(db *sql.DB) (error) {
+func notifyForCardExpiry(db *sql.DB) error {
 	now := time.Now()
 	year, monthStr, _ := now.Date()
 	month := int(monthStr)
@@ -38,7 +35,6 @@ func notifyForCardExpiry(db *sql.DB) (error) {
 	var workspaceId int
 	var last4 string
 
-
 	for results.Next() {
 		args := make(map[string]string)
 
@@ -50,14 +46,14 @@ func notifyForCardExpiry(db *sql.DB) (error) {
 		firstOfMonth := time.Date(year, monthStr, 1, 0, 0, 0, 0, currentLocation)
 		lastOfMonth := firstOfMonth.AddDate(0, 1, -1)
 		_, _, lastDayStr := lastOfMonth.Date()
-		lastDay := int(lastDayStr)
+		lastDay := lastDayStr
 
 		daysUntilExpiry := strconv.Itoa(lastDay + 1)
 
 		args["ending_digits"] = last4
 		args["days"] = daysUntilExpiry
 
-		if expYear == year && (expMonth - month) == 1{ // 1 month until credit card expiry
+		if expYear == year && (expMonth-month) == 1 { // 1 month until credit card expiry
 			user, err := helpers.GetUserFromDB(userId)
 			if err != nil {
 				helpers.Log(logrus.ErrorLevel, "could not get user from DB\r\n")
@@ -82,7 +78,7 @@ func notifyForCardExpiry(db *sql.DB) (error) {
 	return nil
 }
 
-func sendCustomerSatisfactionSurvey(db *sql.DB) (error) {
+func sendCustomerSatisfactionSurvey(db *sql.DB) error {
 	now := time.Now()
 	numDaysToWait := 7
 
@@ -117,15 +113,15 @@ func sendCustomerSatisfactionSurvey(db *sql.DB) (error) {
 		workspace := helpers.CreateWorkspace(workspaceId, workspaceName, userId, nil, workspacePlan, nil, nil)
 
 		diff := now.Sub(createdDate)
-		daysElapsed := int(diff.Hours()/24) // number of days  
+		daysElapsed := int(diff.Hours() / 24) // number of days
 
 		if daysElapsed >= numDaysToWait && sentSurvey == 0 {
 			err = utils.DispatchEmail(subject, "customer_satisfaction_survey", user, workspace, args)
 
 			// TODO: move this to ensure emails are sent before updating database
-			_, err := db.Query("UPDATE workspaces SET sent_satisfaction_survey = 1 WHERE id = ?", workspaceId)
-			if err != nil {
-				helpers.Log(logrus.ErrorLevel, fmt.Sprintf("error updating database. error: 5s\r\n", err.Error()));
+			_, errdb := db.Query("UPDATE workspaces SET sent_satisfaction_survey = 1 WHERE id = ?", workspaceId)
+			if errdb != nil {
+				helpers.Log(logrus.ErrorLevel, fmt.Sprintf("error %s updating database. error: 5s\r\n", err.Error()))
 				helpers.Log(logrus.ErrorLevel, err.Error())
 				continue
 			}
@@ -150,8 +146,7 @@ func SendBackgroundEmails() error {
 
 	ago := time.Time{}
 	ago = ago.AddDate(0, 0, -14)
-	reminded := time.Time{}
-	reminded = reminded.AddDate(0, 0, -28)
+
 	dateFormatted := ago.Format("2006-01-02 15:04:05")
 	results, err := db.Query("SELECT workspaces.id, workspaces.creator_id from workspaces inner join users on users.id = workspaces.creator_id where users.last_login >= ? AND users.last_login_reminded IS NULL", dateFormatted)
 	if err != nil {
@@ -241,8 +236,9 @@ func SendBackgroundEmails() error {
 			continue
 		}
 
-		results2, err := db.Query("SELECT id, percentage from usage_triggers where workspace_id = ?", workspace.Id)
+		results2, _ := db.Query("SELECT id, percentage from usage_triggers where workspace_id = ?", workspace.Id)
 		defer results2.Close()
+
 		for results2.Next() {
 			results2.Scan(&triggerId, &percentage)
 			var triggerUsageId int

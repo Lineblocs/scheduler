@@ -3,30 +3,31 @@ package billing
 import (
 	_ "github.com/go-sql-driver/mysql"
 
-	"errors"
 	"database/sql"
+	"errors"
+
 	helpers "github.com/Lineblocs/go-helpers"
 	models "lineblocs.com/crontabs/models"
 )
 
 type BraintreeBillingHandler struct {
+	DBConn       *sql.DB
+	BraintreeKey string
 	Billing
 	RetryAttempts int
-	BraintreeKey  string
-	DbConn *sql.DB
 }
 
 func NewBraintreeBillingHandler(dbConn *sql.DB, BraintreeKey string, retryAttempts int) *BraintreeBillingHandler {
 	//rootCtx, _ := context.WithCancel(context.Background())
 	item := BraintreeBillingHandler{
-		DbConn: dbConn,
+		DBConn:        dbConn,
 		BraintreeKey:  BraintreeKey,
 		RetryAttempts: retryAttempts}
 	return &item
 }
 
 func (hndl *BraintreeBillingHandler) ChargeCustomer(user *helpers.User, workspace *helpers.Workspace, invoice *models.UserInvoice) error {
-	//_ := hndl.DbConn
+	//_ := hndl.DBConn
 	// todo: implement handler
 	return errors.New("not implemented yet")
 }

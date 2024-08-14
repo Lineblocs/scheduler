@@ -15,23 +15,24 @@ import (
 )
 
 type StripeBillingHandler struct {
+	DBConn    *sql.DB
+	StripeKey string
 	Billing
 	RetryAttempts int
-	StripeKey     string
-	DbConn *sql.DB
 }
 
 func NewStripeBillingHandler(dbConn *sql.DB, stripeKey string, retryAttempts int) *StripeBillingHandler {
 	//rootCtx, _ := context.WithCancel(context.Background())
-	item := StripeBillingHandler{
-		DbConn: dbConn,
+	item := &StripeBillingHandler{
+		DBConn:        dbConn,
 		StripeKey:     stripeKey,
-		RetryAttempts: retryAttempts}
-	return &item
+		RetryAttempts: retryAttempts,
+	}
+	return item
 }
 
 func (hndl *StripeBillingHandler) ChargeCustomer(user *helpers.User, workspace *helpers.Workspace, invoice *models.UserInvoice) error {
-	db := hndl.DbConn
+	db := hndl.DBConn
 	stripe.Key = hndl.StripeKey
 
 	var id int
@@ -47,25 +48,25 @@ func (hndl *StripeBillingHandler) ChargeCustomer(user *helpers.User, workspace *
 	redirectUrl := fmt.Sprintf("https://app.%s/confirm-payment-intent", domain)
 	descriptor := fmt.Sprintf("%s invoice", domain)
 	customerId := user.StripeId
-    // Define the parameters for creating a PaymentIntent
-    params := &stripe.PaymentIntentParams{
-		Amount: stripe.Int64(int64(invoice.Cents)),
-		Currency:    stripe.String(string(stripe.CurrencyUSD)),
-        AutomaticPaymentMethods: &stripe.PaymentIntentAutomaticPaymentMethodsParams{Enabled: stripe.Bool(true)},
-        Customer:                stripe.String(customerId),
-        PaymentMethod:           stripe.String(paymentMethodId), // Replace with the payment method ID
-        ReturnURL:               stripe.String(redirectUrl),    // Replace with the redirect URL
-        OffSession:              stripe.Bool(true),
-        Confirm:                 stripe.Bool(true),
-        StatementDescriptor:     stripe.String(descriptor),    // Replace with your statement descriptor
-    }
+	// Define the parameters for creating a PaymentIntent
+	params := &stripe.PaymentIntentParams{
+		Amount:                  stripe.Int64(int64(invoice.Cents)),
+		Currency:                stripe.String(string(stripe.CurrencyUSD)),
+		AutomaticPaymentMethods: &stripe.PaymentIntentAutomaticPaymentMethodsParams{Enabled: stripe.Bool(true)},
+		Customer:                stripe.String(customerId),
+		PaymentMethod:           stripe.String(paymentMethodId), // Replace with the payment method ID
+		ReturnURL:               stripe.String(redirectUrl),     // Replace with the redirect URL
+		OffSession:              stripe.Bool(true),
+		Confirm:                 stripe.Bool(true),
+		StatementDescriptor:     stripe.String(descriptor), // Replace with your statement descriptor
+	}
 
-    // Create the PaymentIntent
+	// Create the PaymentIntent
 	_, err = paymentintent.New(params)
 
-    if err != nil {
+	if err != nil {
 		return err
-    }
+	}
 
 	return nil
 }

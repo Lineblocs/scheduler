@@ -4,28 +4,43 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
-	"io/ioutil"
+	"fmt"
+	"io"
 	"net/http"
 	"os"
-	"fmt"
 	"strconv"
+	"time"
 
 	"math"
-	"errors"
+
 	helpers "github.com/Lineblocs/go-helpers"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/joho/godotenv"
 	_ "github.com/mailgun/mailgun-go/v4"
+	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	models "lineblocs.com/crontabs/models"
 	billing "lineblocs.com/crontabs/handlers/billing"
+	models "lineblocs.com/crontabs/models"
 )
 
 var db *sql.DB
 
+type DBConn struct {
+	Conn *sql.DB
+}
+
 type BillingParams struct {
-	Provider string
 	Data     map[string]string
+	Provider string
+}
+
+func NewDBConn(db *sql.DB) *DBConn {
+	if db == nil {
+		db, _ = helpers.CreateDBConn()
+	}
+	return &DBConn{
+		Conn: db,
+	}
 }
 
 func GetDBConnection() (*sql.DB, error) {
@@ -40,7 +55,7 @@ func GetDBConnection() (*sql.DB, error) {
 	return db, nil
 }
 
-func ChargeCustomer(dbConn *sql.DB, billingParams *BillingParams, user *helpers.User, workspace *helpers.Workspace, invoice *models.UserInvoice) (error) {
+func ChargeCustomer(dbConn *sql.DB, billingParams *BillingParams, user *helpers.User, workspace *helpers.Workspace, invoice *models.UserInvoice) error {
 	var hndl billing.BillingHandler
 	retryAttempts, err := strconv.Atoi(billingParams.Data["retry_attempts"])
 	if err != nil {
@@ -68,17 +83,16 @@ func ChargeCustomer(dbConn *sql.DB, billingParams *BillingParams, user *helpers.
 		}
 	}
 
-
-
 	return err
 }
 
-
-func CheckRowCount(rows *sql.Rows) (int, error) {
+func GetRowCount(rows *sql.Rows) (int, error) {
 	var count int
 	for rows.Next() {
 		err := rows.Scan(&count)
 		if err != nil {
+			errMessage := errors.Wrap(err, "error getting workspace user count")
+			helpers.Log(logrus.ErrorLevel, errMessage.Error())
 			return 0, err
 		}
 	}
@@ -94,7 +108,7 @@ func DispatchEmail(subject string, emailType string, user *helpers.User, workspa
 		helpers.Log(logrus.ErrorLevel, err.Error())
 		return err
 	}
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(b))
+	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(b))
 	req.Header.Set("X-Lineblocs-Key", "xxx")
 	req.Header.Set("Content-Type", "application/json")
 
@@ -106,30 +120,36 @@ func DispatchEmail(subject string, emailType string, user *helpers.User, workspa
 	defer resp.Body.Close()
 
 	helpers.Log(logrus.InfoLevel, "response Status:"+resp.Status)
-	body, _ := ioutil.ReadAll(resp.Body)
+	body, _ := io.ReadAll(resp.Body)
 	helpers.Log(logrus.InfoLevel, "response Body:"+string(body))
 	return nil
 }
 
-func GetBillingParams() (*BillingParams, error) {
-	conn, err := GetDBConnection()
-	if err != nil {
-		return nil, err
+func GetPlan(plans []helpers.ServicePlan, workspace *helpers.Workspace) *helpers.ServicePlan {
+	var plan *helpers.ServicePlan
+	for _, target := range plans {
+		if target.Name == workspace.Plan {
+			plan = &target
+			break
+		}
 	}
+	if plan == nil {
+		helpers.Log(logrus.InfoLevel, "No plan found for user..\r\n")
+	}
+	return plan
+}
 
-	row := conn.QueryRow("SELECT payment_gateway FROM customizations")
+func (c *DBConn) GetBillingParams() (*BillingParams, error) {
+
+	row := c.Conn.QueryRow("SELECT payment_gateway FROM customizations")
 
 	var paymentGateway string
-	err = row.Scan(&paymentGateway)
+	err := row.Scan(&paymentGateway)
 	if err != nil {
 		return nil, err
 	}
 
-
-	row = conn.QueryRow("SELECT stripe_private_key FROM api_credentials")
-	if err != nil {
-		return nil, err
-	}
+	row = c.Conn.QueryRow("SELECT stripe_private_key FROM api_credentials")
 
 	var stripePrivateKey string
 	err = row.Scan(&stripePrivateKey)
@@ -141,7 +161,8 @@ func GetBillingParams() (*BillingParams, error) {
 	data["stripe_key"] = stripePrivateKey
 	params := BillingParams{
 		Provider: "stripe",
-		Data:     data}
+		Data:     data,
+	}
 	return &params, nil
 }
 
@@ -163,17 +184,17 @@ func ComputeAmountToCharge(fullCentsToCharge float64, availMinutes float64, minu
 	//when total goes below 0, only charge the amount that went below 0
 	// ensure availMinutes < minutes
 	if availMinutes > 0 && minAfterDebit < 0 && availMinutes <= minutes {
-		percentOfDebit, err := strconv.ParseFloat( fmt.Sprintf(".%s", strconv.FormatFloat((minutes - availMinutes), 'f', -1, 64)), 8)
+		percentOfDebit, err := strconv.ParseFloat(fmt.Sprintf(".%s", strconv.FormatFloat((minutes-availMinutes), 'f', -1, 64)), 64)
 		if err != nil {
 			helpers.Log(logrus.ErrorLevel, fmt.Sprintf("computeAmountToCharge could not parse float %s", err.Error()))
 			return 0, err
 		}
-		
+
 		helpers.Log(logrus.InfoLevel, fmt.Sprintf("computeAmountToCharge percentage = %f, rounded = %f", percentOfDebit, math.Round(percentOfDebit)))
 		helpers.Log(logrus.InfoLevel, fmt.Sprintf("computeAmountToCharge debit = %f", percentOfDebit))
-		centsToCharge := math.Abs( float64(fullCentsToCharge) * percentOfDebit )
+		centsToCharge := math.Abs(float64(fullCentsToCharge) * percentOfDebit)
 		helpers.Log(logrus.InfoLevel, fmt.Sprintf("computeAmountToCharge result: %f\r\n", centsToCharge))
-		return math.Max(1,centsToCharge), nil
+		return math.Max(1, centsToCharge), nil
 	} else if availMinutes >= minutes { // user has enough balance, no need to charge
 		helpers.Log(logrus.InfoLevel, fmt.Sprintf("computeAmountToCharge result: %f\r\n", 0.0))
 		return 0, nil
@@ -184,9 +205,54 @@ func ComputeAmountToCharge(fullCentsToCharge float64, availMinutes float64, minu
 
 	// this should not happen
 	helpers.Log(logrus.InfoLevel, fmt.Sprintf("computeAmountToCharge result: %f\r\n", 0.0))
-	return 0, errors.New(fmt.Sprintf("billing ran into unexpected error. computeAmountToCharge full: %f, used minutes %f, minutes %f, minAfterDebit: %f\r\n", fullCentsToCharge, availMinutes, minutes, minAfterDebit))
+	return 0, fmt.Errorf("billing ran into unexpected error. computeAmountToCharge full: %f, used minutes %f, minutes %f, minAfterDebit: %f", fullCentsToCharge, availMinutes, minutes, minAfterDebit)
 }
 
+func CreateMonthlyNumberRentalDebit(db *sql.DB, workspaceId int, userId int, start time.Time) (int, int) {
+	var didId int
+	var monthlyCosts int
+	results1, err := db.Query("SELECT id, monthly_cost  FROM did_numbers WHERE workspace_id = ?", workspaceId)
+	if err != sql.ErrNoRows && err != nil {
+		helpers.Log(logrus.ErrorLevel, "Could not get dids info..\r\n")
+		errMessage := errors.Wrap(err, "Could not get dids info")
+		helpers.Log(logrus.ErrorLevel, errMessage.Error())
+	}
+	defer results1.Close()
+	for results1.Next() {
+		results1.Scan(&didId, &monthlyCosts)
+		stmt, err := db.Prepare("INSERT INTO users_debits (`source`, `status`, `cents`, `module_id`, `user_id`, `workspace_id`, `created_at`) VALUES ( ?, ?, ?, ?, ?, ?)")
+		if err != nil {
+			errMessage := errors.Wrap(err, "could not prepare query")
+			helpers.Log(logrus.ErrorLevel, errMessage.Error())
+			continue
+		}
+
+		defer stmt.Close()
+		_, err = stmt.Exec("NUMBER_RENTAL", "INCOMPLETE", monthlyCosts, didId, userId, workspaceId, start)
+		if err != nil {
+			helpers.Log(logrus.ErrorLevel, "error creating number rental debit..\r\n")
+			continue
+		}
+	}
+	return didId, monthlyCosts
+}
+
+func GetWorkspaceUserCount(db *sql.DB, workspaceId int) int {
+	rows, err := db.Query("SELECT COUNT(*) as count FROM  workspaces_users WHERE workspace_id = ?", workspaceId)
+	if err != nil {
+		helpers.Log(logrus.ErrorLevel, "error getting workspace user count.\r\n")
+		helpers.Log(logrus.ErrorLevel, err.Error())
+	}
+	defer rows.Close()
+
+	userCount, err := GetRowCount(rows)
+	if err != nil {
+		helpers.Log(logrus.ErrorLevel, "error getting workspace user count.\r\n")
+		helpers.Log(logrus.ErrorLevel, err.Error())
+	}
+
+	return userCount
+}
 
 func CreateInvoiceConfirmationNumber() (string, error) {
 	return "123", nil

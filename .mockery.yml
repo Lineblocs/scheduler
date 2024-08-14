@@ -1,0 +1,5 @@
+all: True
+with-expecter: True
+recursive: True
+disable-version-string: true
+output: mocks
