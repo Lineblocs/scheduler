@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -21,13 +22,33 @@ type MonthlyBillingJob struct {
 	workspaceRepository repository.WorkspaceRepository
 	paymentRepository   repository.PaymentRepository
 	db                  *sql.DB
+	logger              *logrus.Entry
 }
 
-func NewMonthlyBillingJob(db *sql.DB, worskpaceRepository repository.WorkspaceRepository, paymentRepository repository.PaymentRepository) *MonthlyBillingJob {
+type BillingMetrics struct {
+	MembershipCosts    float64
+	CallTolls          float64
+	RecordingCosts     float64
+	FaxCosts           float64
+	MonthlyNumberRents float64
+	TotalCosts         float64
+}
+
+type BillingContext struct {
+	WorkspaceID    int
+	UserID         int
+	StartTime      time.Time
+	EndTime        time.Time
+	CorrelationID  string
+	Logger         *logrus.Entry
+}
+
+func NewMonthlyBillingJob(db *sql.DB, workspaceRepository repository.WorkspaceRepository, paymentRepository repository.PaymentRepository) *MonthlyBillingJob {
 	return &MonthlyBillingJob{
 		db:                  db,
-		workspaceRepository: worskpaceRepository,
+		workspaceRepository: workspaceRepository,
 		paymentRepository:   paymentRepository,
+		logger:              logrus.WithField("component", "monthly_billing"),
 	}
 }
 
