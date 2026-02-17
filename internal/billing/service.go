@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"lineblocs.com/crontabs/models"
 	"lineblocs.com/crontabs/repository"
-	"lineblocs.com/crontabs/utils"
 )
 
 type BillingService struct {

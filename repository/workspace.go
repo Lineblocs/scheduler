@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"database/sql"
 	helpers "github.com/Lineblocs/go-helpers"
 )
 
@@ -14,7 +15,12 @@ type WorkspaceRepository interface {
 
 type WorkspaceService struct{}
 
+
 func NewWorkspaceService() WorkspaceRepository {
+	return &WorkspaceService{}
+}
+
+func NewWorkspaceRepository(db *sql.DB) WorkspaceRepository {
 	return &WorkspaceService{}
 }
 

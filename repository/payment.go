@@ -21,6 +21,10 @@ type PaymentRepository interface {
 	GetServicePlans() ([]helpers.ServicePlan, error)
 }
 
+func NewPaymentRepository(db *sql.DB) PaymentRepository {
+	return NewPaymentService(db)
+}
+
 func NewPaymentService(db *sql.DB) *PaymentService {
 	return &PaymentService{
 		db: db,

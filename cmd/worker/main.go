@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"log"
+	"os"
 
 	"lineblocs.com/crontabs/internal/billing"
 	"lineblocs.com/crontabs/models"
@@ -18,7 +19,8 @@ func main() {
 	pRepo := repository.NewPaymentRepository(db)
 	billingSvc := billing.NewBillingService(db, wRepo, pRepo)
 
-	conn, _ := amqp.Dial("amqp://guest:guest@localhost:5672/")
+
+	conn, _ := amqp.Dial(os.Getenv("QUEUE_URL"))
 	ch, _ := conn.Channel()
 
 	// Prefetch(1) ensures the worker doesn't hog all tasks if one is slow

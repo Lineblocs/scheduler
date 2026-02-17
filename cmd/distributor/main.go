@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"log"
-	"time"
+	"os"
 
 	"lineblocs.com/crontabs/models"
 	"lineblocs.com/crontabs/utils"
@@ -18,7 +18,8 @@ func main() {
 	db, _ := utils.GetDBConnection()
 	defer db.Close()
 
-	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
+
+	conn, err := amqp.Dial(os.Getenv("QUEUE_URL"))
 	if err != nil { log.Fatal(err) }
 	defer conn.Close()
 
