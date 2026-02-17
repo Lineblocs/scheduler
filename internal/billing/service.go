@@ -344,23 +344,12 @@ func (s *BillingService) chargeInvoice(invoiceID int64, costs *BillingCosts, dat
 
 func (s *BillingService) chargeWithCredits(invoiceID int64, costs *BillingCosts, data *BillingData, logger *logrus.Entry) error {
 	remainingBalance := data.BillingInfo.RemainingBalanceCents
-	balanceAfterCharge := remainingBalance - costs.TotalCosts
-	chargeAmount, err := utils.ComputeAmountToCharge(costs.TotalCosts, remainingBalance, balanceAfterCharge)
-	if err != nil {
-		logger.WithError(err).Error("error calculating charge amount")
-		return err
-	}
 
 	if remainingBalance >= costs.TotalCosts {
 		return s.chargeCreditsOnly(invoiceID, costs.TotalCosts, logger)
 	}
 
-	err = s.chargeCreditsPartial(invoiceID, chargeAmount, logger)
-	if err != nil {
-		return err
-	}
-
-	return s.chargeCardForRemainder(invoiceID, chargeAmount, costs, data, logger)
+	return s.markInvoiceChargeIncomplete(invoiceID, logger)
 }
 
 func (s *BillingService) chargeCreditsOnly(invoiceID int64, totalCosts float64, logger *logrus.Entry) error {
@@ -388,44 +377,7 @@ func (s *BillingService) chargeCreditsOnly(invoiceID int64, totalCosts float64, 
 	return nil
 }
 
-func (s *BillingService) chargeCreditsPartial(invoiceID int64, chargeAmount float64, logger *logrus.Entry) error {
-	logger.Info("User does not have enough credits. Charging any payment sources")
 
-	updateStmt, err := s.db.Prepare("UPDATE users_invoices SET status = 'INCOMPLETE', source ='CREDITS', cents_collected = ? WHERE id = ?")
-	if err != nil {
-		logger.WithError(err).Error("could not prepare update query")
-		return err
-	}
-	defer updateStmt.Close()
-
-	_, err = updateStmt.Exec(chargeAmount, invoiceID)
-	if err != nil {
-		logger.WithError(err).Error("error updating invoice")
-		return err
-	}
-
-	return nil
-}
-
-func (s *BillingService) chargeCardForRemainder(invoiceID int64, chargeAmount float64, costs *BillingCosts, data *BillingData, logger *logrus.Entry) error {
-	logger.Info("Charging remainder with card")
-
-	cardChargeAmount := int(math.Ceil(chargeAmount))
-	invoice := models.UserInvoice{
-		Id:          int(invoiceID),
-		Cents:       cardChargeAmount,
-		InvoiceDesc: costs.InvoiceDesc,
-	}
-
-
-	err := s.paymentRepository.ChargeCustomer(data.BillingParams.(*utils.BillingParams), data.User, data.Workspace, &invoice)
-	if err != nil {
-		logger.WithError(err).Error("error charging customer card")
-		return s.markInvoiceFailed(invoiceID, data.Now, logger)
-	}
-
-	return s.markInvoiceSuccess(invoiceID, costs.TotalCosts, data.Now, logger)
-}
 
 func (s *BillingService) chargeWithCard(invoiceID int64, costs *BillingCosts, data *BillingData, logger *logrus.Entry) error {
 	logger.Info("Charging recurringly with card")
