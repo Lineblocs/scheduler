@@ -6,6 +6,8 @@ FROM golang:1.22.2
 # Add Maintainer Info
 LABEL maintainer="Nadir Hamid <matrix.nad@gmail.com>"
 
+ENV RUN_AS=distributor
+
 # Set the Current Working Directory inside the container
 WORKDIR /app
 
@@ -19,10 +21,9 @@ RUN go mod download
 COPY . .
 
 # Build the Go app
-RUN go build -o main .
-
-# Expose port 8080 to the outside world
-EXPOSE 8080
+#RUN go build -o main .
+RUN make build
 
 # Command to run the executable
-#CMD ["./main"]
+
+ENTRYPOINT ["./entrypoint.sh"]

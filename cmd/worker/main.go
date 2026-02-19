@@ -20,12 +20,24 @@ func main() {
 	billingSvc := billing.NewBillingService(db, wRepo, pRepo)
 
 
-	conn, _ := amqp.Dial(os.Getenv("QUEUE_URL"))
-	ch, _ := conn.Channel()
+	conn, err := amqp.Dial(os.Getenv("QUEUE_URL"))
+	if err != nil {
+		panic(err)
+	}
+
+	defer conn.Close()
+	ch, err := conn.Channel()
+	if err != nil {
+		panic(err)
+	}
+	defer ch.Close()
 
 	// Prefetch(1) ensures the worker doesn't hog all tasks if one is slow
 	ch.Qos(1, 0, false)
-	msgs, _ := ch.Consume("billing_tasks", "", false, false, false, false, nil)
+	msgs, err := ch.Consume("billing_tasks", "", false, false, false, false, nil)
+	if err != nil {
+		panic(err)
+	}
 
 	log.Println("Worker ready. Waiting for tasks...")
 
