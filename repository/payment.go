@@ -18,6 +18,7 @@ type PaymentService struct {
 
 type PaymentRepository interface {
 	ChargeCustomer(billingParams *utils.BillingParams, user *helpers.User, workspace *helpers.Workspace, invoice *models.UserInvoice) error
+	GetSubscription(subId int) (*helpers.Subscription, error)
 	GetServicePlans() ([]helpers.ServicePlan, error)
 }
 
@@ -33,7 +34,11 @@ func NewPaymentService(db *sql.DB) *PaymentService {
 
 func (ps *PaymentService) GetServicePlans() ([]helpers.ServicePlan, error) {
 	//TODO: In the future replace by GetServicePlans2() call
-	return helpers.GetServicePlans()
+	return helpers.GetServicePlans2()
+}
+
+func (ps *PaymentService) GetSubscription(subId int) (*helpers.Subscription, error) {
+	return helpers.GetSubscriptionFromDB(subId)
 }
 
 func (ps *PaymentService) ChargeCustomer(billingParams *utils.BillingParams, user *helpers.User, workspace *helpers.Workspace, invoice *models.UserInvoice) error {

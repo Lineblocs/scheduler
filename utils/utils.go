@@ -128,7 +128,23 @@ func DispatchEmail(subject string, emailType string, user *helpers.User, workspa
 func GetPlan(plans []helpers.ServicePlan, workspace *helpers.Workspace) *helpers.ServicePlan {
 	var plan *helpers.ServicePlan
 	for _, target := range plans {
-		if target.Name == workspace.Plan {
+		helpers.Log(logrus.InfoLevel, fmt.Sprintf("checking plan %s for workspace plan %s\r\n", target.KeyName, workspace.Plan))
+		if target.KeyName == workspace.Plan {
+			plan = &target
+			break
+		}
+	}
+	if plan == nil {
+		helpers.Log(logrus.InfoLevel, "No plan found for user..\r\n")
+	}
+	return plan
+}
+
+func GetPlanBySubscription(plans []helpers.ServicePlan, subscription *helpers.Subscription) *helpers.ServicePlan {
+	var plan *helpers.ServicePlan
+	for _, target := range plans {
+
+		if target.Id == subscription.CurrentPlanId {
 			plan = &target
 			break
 		}
@@ -220,9 +236,11 @@ func CreateMonthlyNumberRentalDebit(db *sql.DB, workspaceId int, userId int, sta
 	defer results1.Close()
 	for results1.Next() {
 		results1.Scan(&didId, &monthlyCosts)
-		stmt, err := db.Prepare("INSERT INTO users_debits (`source`, `status`, `cents`, `module_id`, `user_id`, `workspace_id`, `created_at`) VALUES ( ?, ?, ?, ?, ?, ?)")
+
+		stmt, err := db.Prepare("INSERT INTO users_debits (`source`, `status`, `cents`, `module_id`, `user_id`, `workspace_id`, `created_at`) VALUES ( ?, ?, ?, ?, ?, ?, ?)")
 		if err != nil {
 			errMessage := errors.Wrap(err, "could not prepare query")
+			fmt.Printf("error preparing query: %s\r\n", errMessage.Error())
 			helpers.Log(logrus.ErrorLevel, errMessage.Error())
 			continue
 		}
@@ -230,6 +248,7 @@ func CreateMonthlyNumberRentalDebit(db *sql.DB, workspaceId int, userId int, sta
 		defer stmt.Close()
 		_, err = stmt.Exec("NUMBER_RENTAL", "INCOMPLETE", monthlyCosts, didId, userId, workspaceId, start)
 		if err != nil {
+			fmt.Printf("error executing query: %s\r\n", err.Error())
 			helpers.Log(logrus.ErrorLevel, "error creating number rental debit..\r\n")
 			continue
 		}

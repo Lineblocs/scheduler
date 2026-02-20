@@ -60,7 +60,7 @@ func (s *BillingService) ProcessTask(task models.BillingTask) error {
 func (s *BillingService) processMonthly(task models.BillingTask) error {
 	logger := logrus.WithField("component", "monthly_billing").WithField("workspace_id", task.WorkspaceID)
 
-	billingData, err := s.loadBillingData(task, "monthly", logger)
+	billingData, err := s.loadBillingData(task, "MONTHLY", logger)
 	if err != nil {
 		return err
 	}
@@ -78,8 +78,17 @@ func (s *BillingService) processMonthly(task models.BillingTask) error {
 	return s.chargeInvoice(invoiceID, costs, billingData, logger)
 }
 
+
 func (s *BillingService) loadBillingData(task models.BillingTask, billingType string, logger *logrus.Entry) (*BillingData, error) {
 	conn := utils.NewDBConn(s.db)
+
+	subscription, err := s.paymentRepository.GetSubscription(task.SubscriptionID)
+	if err != nil {
+		logger.WithError(err).Error("error getting subscription")
+		return nil, err
+	}
+	logger.Infof("Loaded subscription %d for billing task", subscription.Id)
+
 	billingParams, err := conn.GetBillingParams()
 	if err != nil {
 		logger.WithError(err).Error("error getting billing params")
@@ -88,7 +97,7 @@ func (s *BillingService) loadBillingData(task models.BillingTask, billingType st
 
 	now := time.Now()
 	var billingPeriodStart time.Time
-	if billingType == "annual" {
+	if billingType == "ANNUAL" {
 		billingPeriodStart = now.AddDate(-1, 0, 0)
 	} else {
 		billingPeriodStart = now.AddDate(0, -1, 0)
@@ -112,7 +121,11 @@ func (s *BillingService) loadBillingData(task models.BillingTask, billingType st
 		return nil, err
 	}
 
-	plan := utils.GetPlan(plans, workspace)
+	plan := utils.GetPlanBySubscription(plans, subscription)
+	if plan == nil {
+		logger.Error("plan is nil")
+		return nil, fmt.Errorf("plan not found for subscription")
+	}
 
 	billingInfo, err := s.workspaceRepository.GetWorkspaceBillingInfo(workspace)
 	if err != nil {
@@ -506,7 +519,17 @@ func (s *BillingService) processAnnual(task models.BillingTask) error {
 		return err
 	}
 
-	plan := utils.GetPlan(plans, workspace)
+	subscription, err := s.paymentRepository.GetSubscription(task.SubscriptionID)
+	if err != nil {
+		logger.WithError(err).Error("error getting user")
+		return err
+	}
+
+	plan := utils.GetPlanBySubscription(plans, subscription)
+	if plan == nil {
+		logger.Error("plan is nil")
+		return fmt.Errorf("plan not found for subscription")
+	}
 
 	billingInfo, err := s.workspaceRepository.GetWorkspaceBillingInfo(workspace)
 	if err != nil {
