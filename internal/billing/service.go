@@ -26,12 +26,12 @@ type BillingData struct {
 }
 
 type BillingCosts struct {
-	MembershipCosts   float64
-	CallTollsCosts    float64
-	RecordingCosts    float64
-	FaxCosts          float64
-	NumberRentalCosts float64
-	TotalCosts        float64
+	MembershipCosts   int64
+	CallTollsCosts    int64
+	RecordingCosts    int64
+	FaxCosts          int64
+	NumberRentalCosts int64
+	TotalCosts        int64
 	InvoiceDesc       string
 }
 
@@ -157,8 +157,8 @@ func (s *BillingService) calculateMonthlyCosts(data *BillingData, logger *logrus
 	userCount := utils.GetWorkspaceUserCount(s.db, data.Workspace.Id)
 	logger.Infof("Workspace total user count %d", userCount)
 
-	costs.MembershipCosts = data.Plan.BaseCosts * float64(userCount)
-	logger.Infof("Workspace total membership costs is %f", costs.MembershipCosts)
+	costs.MembershipCosts = int64(data.Plan.BaseCosts * float64(userCount))
+	logger.Infof("Workspace total membership costs is %d", costs.MembershipCosts)
 
 	utils.CreateMonthlyNumberRentalDebit(s.db, data.Workspace.Id, data.User.Id, data.BillingPeriodStart)
 
@@ -183,7 +183,7 @@ func (s *BillingService) calculateMonthlyCosts(data *BillingData, logger *logrus
 	costs.TotalCosts = costs.MembershipCosts + costs.CallTollsCosts + costs.RecordingCosts + costs.FaxCosts + costs.NumberRentalCosts
 	costs.InvoiceDesc = fmt.Sprintf("LineBlocs invoice for %s", data.BillingInfo.InvoiceDue)
 
-	logger.Infof("Final costs are membership: %f, call tolls: %f, recordings: %f, fax: %f, did rentals: %f, total: %f (cents)",
+	logger.Infof("Final costs are membership: %d, call tolls: %d, recordings: %d, fax: %d, did rentals: %d, total: %d (cents)",
 		costs.MembershipCosts, costs.CallTollsCosts, costs.RecordingCosts, costs.FaxCosts, costs.NumberRentalCosts, costs.TotalCosts)
 
 	return costs, nil
@@ -203,7 +203,7 @@ func (s *BillingService) processDebits(data *BillingData, costs *BillingCosts, s
 		var debitID int
 		var debitSource string
 		var debitModuleID int
-		var debitCostCents float64
+		var debitCostCents int64
 		var debitCreatedAt time.Time
 
 		if err := rows.Scan(&debitID, &debitSource, &debitModuleID, &debitCostCents, &debitCreatedAt); err != nil {
@@ -222,7 +222,7 @@ func (s *BillingService) processDebits(data *BillingData, costs *BillingCosts, s
 	return nil
 }
 
-func (s *BillingService) processCallDebit(data *BillingData, costs *BillingCosts, moduleID int, costCents float64, remainingMinutes *float64, logger *logrus.Entry) {
+func (s *BillingService) processCallDebit(data *BillingData, costs *BillingCosts, moduleID int, costCents int64, remainingMinutes *float64, logger *logrus.Entry) {
 	call, err := s.workspaceRepository.GetCallFromDB(moduleID)
 	if err != nil {
 		logger.WithError(err).Error("error getting call")
@@ -232,13 +232,13 @@ func (s *BillingService) processCallDebit(data *BillingData, costs *BillingCosts
 	callDurationMinutes := float64(call.DurationNumber / 60)
 	logger.Infof("processing call with duration %d seconds", call.DurationNumber)
 
-	charge, err := utils.ComputeAmountToCharge(costCents, *remainingMinutes, callDurationMinutes)
+	charge, err := utils.ComputeAmountToCharge(float64(costCents), *remainingMinutes, callDurationMinutes)
 	if err != nil {
 		logger.WithError(err).Error("error computing charge")
 		return
 	}
 
-	costs.CallTollsCosts += charge
+	costs.CallTollsCosts += int64(charge)
 	*remainingMinutes -= callDurationMinutes
 }
 
@@ -250,7 +250,7 @@ func (s *BillingService) processNumberRentalDebit(data *BillingData, costs *Bill
 	}
 
 	logger.Infof("processing DID rental with monthly cost %d", did.MonthlyCost)
-	costs.NumberRentalCosts += float64(did.MonthlyCost)
+	costs.NumberRentalCosts += int64(did.MonthlyCost)
 }
 
 func (s *BillingService) processRecordings(data *BillingData, costs *BillingCosts, startStr, endStr string, logger *logrus.Entry) error {
@@ -273,14 +273,14 @@ func (s *BillingService) processRecordings(data *BillingData, costs *BillingCost
 			continue
 		}
 
-		recordingCentsPerByte := math.Round(data.BaseCosts.RecordingsPerByte * recordingSizeBytes)
-		charge, err := utils.ComputeAmountToCharge(recordingCentsPerByte, remainingRecordings, recordingSizeBytes)
+		recordingCentsPerByte := int64(math.Round(data.BaseCosts.RecordingsPerByte * recordingSizeBytes))
+		charge, err := utils.ComputeAmountToCharge(float64(recordingCentsPerByte), remainingRecordings, recordingSizeBytes)
 		if err != nil {
 			logger.WithError(err).Error("error calculating recording charge")
 			continue
 		}
 
-		costs.RecordingCosts += charge
+		costs.RecordingCosts += int64(charge)
 		remainingRecordings -= recordingSizeBytes
 	}
 
@@ -314,7 +314,7 @@ func (s *BillingService) processFaxes(data *BillingData, costs *BillingCosts, st
 			continue
 		}
 
-		costs.FaxCosts += charge
+		costs.FaxCosts += int64(charge)
 		remainingFaxUnits--
 	}
 
@@ -324,14 +324,23 @@ func (s *BillingService) processFaxes(data *BillingData, costs *BillingCosts, st
 func (s *BillingService) createInvoice(costs *BillingCosts, data *BillingData, logger *logrus.Entry) (int64, error) {
 	logger.Infof("Creating invoice for user %d, on workspace %d, plan type %s", data.User.Id, data.Workspace.Id, data.Workspace.Plan)
 
-	insertStmt, err := s.db.Prepare("INSERT INTO users_invoices (`cents`, `call_costs`, `recording_costs`, `fax_costs`, `membership_costs`, `number_costs`, `status`, `user_id`, `workspace_id`, `created_at`, `updated_at`) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	insertStmt, err := s.db.Prepare("INSERT INTO users_invoices (`cents`, `cents_including_taxes`, `call_costs`, `recording_costs`, `fax_costs`, `membership_costs`, `number_costs`, `status`, `user_id`, `workspace_id`, `created_at`, `updated_at`, `source`, `tax_metadata`) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		logger.WithError(err).Error("could not prepare invoice insert query")
 		return 0, err
 	}
 	defer insertStmt.Close()
 
-	result, err := insertStmt.Exec(costs.TotalCosts, costs.CallTollsCosts, costs.RecordingCosts, costs.FaxCosts, costs.MembershipCosts, costs.NumberRentalCosts, "INCOMPLETE", data.Workspace.CreatorId, data.Workspace.Id, data.Now, data.Now)
+	source := "SUBSCRIPTION"
+	taxMetadata := utils.CreateTaxMetadata(costs.CallTollsCosts, costs.RecordingCosts, costs.FaxCosts, costs.MembershipCosts, costs.NumberRentalCosts)
+	helpers.Log(logrus.InfoLevel, fmt.Sprintf("Tax metadata for invoice: %s", taxMetadata))
+
+	// implement code to calculate taxes here and add to cents_including_taxes when we have tax logic in place
+	var centsIncludingTaxes int64
+	var taxes int64
+	taxes = 0
+	centsIncludingTaxes = costs.TotalCosts + taxes
+	result, err := insertStmt.Exec(costs.TotalCosts, centsIncludingTaxes, costs.CallTollsCosts, costs.RecordingCosts, costs.FaxCosts, costs.MembershipCosts, costs.NumberRentalCosts, "INCOMPLETE", data.Workspace.CreatorId, data.Workspace.Id, data.Now, data.Now, source, taxMetadata)
 	if err != nil {
 		logger.WithError(err).Error("error creating invoice")
 		return 0, err
@@ -356,16 +365,16 @@ func (s *BillingService) chargeInvoice(invoiceID int64, costs *BillingCosts, dat
 }
 
 func (s *BillingService) chargeWithCredits(invoiceID int64, costs *BillingCosts, data *BillingData, logger *logrus.Entry) error {
-	remainingBalance := data.BillingInfo.RemainingBalanceCents
+	remainingBalance := int64(data.BillingInfo.RemainingBalanceCents)
 
-	if remainingBalance >= costs.TotalCosts {
-		return s.chargeCreditsOnly(invoiceID, costs.TotalCosts, logger)
+	if remainingBalance >= int64(costs.TotalCosts) {
+		return s.chargeCreditsOnly(invoiceID, int64(costs.TotalCosts), logger)
 	}
 
 	return s.markInvoiceChargeIncomplete(invoiceID, logger)
 }
 
-func (s *BillingService) chargeCreditsOnly(invoiceID int64, totalCosts float64, logger *logrus.Entry) error {
+func (s *BillingService) chargeCreditsOnly(invoiceID int64, totalCosts int64, logger *logrus.Entry) error {
 	logger.Info("User has enough credits. Charging balance")
 
 	confNumber, err := utils.CreateInvoiceConfirmationNumber()
@@ -395,7 +404,10 @@ func (s *BillingService) chargeCreditsOnly(invoiceID int64, totalCosts float64, 
 func (s *BillingService) chargeWithCard(invoiceID int64, costs *BillingCosts, data *BillingData, logger *logrus.Entry) error {
 	logger.Info("Charging recurringly with card")
 
-	cardChargeAmount := int(math.Ceil(costs.TotalCosts))
+	cardChargeAmount := int(math.Ceil(float64(costs.TotalCosts)))
+	cardChargeAmount = 200
+	logger.Info(fmt.Sprintf("Total costs to charge on card is %d cents", cardChargeAmount))
+
 	invoice := models.UserInvoice{
 		Id:          int(invoiceID),
 		Cents:       cardChargeAmount,
@@ -408,10 +420,10 @@ func (s *BillingService) chargeWithCard(invoiceID int64, costs *BillingCosts, da
 		return s.markInvoiceChargeIncomplete(invoiceID, logger)
 	}
 
-	return s.markInvoiceChargeSuccess(invoiceID, costs.TotalCosts, logger)
+	return s.markInvoiceChargeSuccess(invoiceID, int64(costs.TotalCosts), logger)
 }
 
-func (s *BillingService) markInvoiceSuccess(invoiceID int64, totalCosts float64, now time.Time, logger *logrus.Entry) error {
+func (s *BillingService) markInvoiceSuccess(invoiceID int64, totalCosts int64, now time.Time, logger *logrus.Entry) error {
 	successStmt, err := s.db.Prepare("UPDATE users_invoices SET status = 'COMPLETE', source ='CARD', cents_collected = ?, last_attempted = ?, num_attempts = 1 WHERE id = ?")
 	if err != nil {
 		logger.WithError(err).Error("could not prepare update query")
@@ -446,7 +458,7 @@ func (s *BillingService) markInvoiceFailed(invoiceID int64, now time.Time, logge
 }
 
 func (s *BillingService) markInvoiceChargeIncomplete(invoiceID int64, logger *logrus.Entry) error {
-	updateStmt, err := s.db.Prepare("UPDATE users_invoices SET status = 'INCOMPLETE', source = 'CARD', cents_collected = 0.0 WHERE id = ?")
+	updateStmt, err := s.db.Prepare("UPDATE users_invoices SET status = 'INCOMPLETE' WHERE id = ?")
 	if err != nil {
 		logger.WithError(err).Error("could not prepare update query")
 		return err
@@ -462,7 +474,7 @@ func (s *BillingService) markInvoiceChargeIncomplete(invoiceID int64, logger *lo
 	return nil
 }
 
-func (s *BillingService) markInvoiceChargeSuccess(invoiceID int64, totalCosts float64, logger *logrus.Entry) error {
+func (s *BillingService) markInvoiceChargeSuccess(invoiceID int64, totalCosts int64, logger *logrus.Entry) error {
 	confirmNumber, err := utils.CreateInvoiceConfirmationNumber()
 	if err != nil {
 		logger.WithError(err).Error("error generating confirmation number")
@@ -546,15 +558,15 @@ func (s *BillingService) processAnnual(task models.BillingTask) error {
 	userCount := utils.GetWorkspaceUserCount(s.db, workspace.Id)
 	logger.Infof("Workspace total user count %d", userCount)
 
-	totalCosts := 0.0
-	annualMembershipCosts := plan.BaseCosts * float64(userCount) * 12.0
-	callTollsCosts := 0.0
-	recordingCosts := 0.0
-	faxCosts := 0.0
-	numberRentalCosts := 0.0
+	totalCosts := int64(0)
+	annualMembershipCosts := int64(plan.BaseCosts * float64(userCount) * 12.0)
+	callTollsCosts := int64(0)
+	recordingCosts := int64(0)
+	faxCosts := int64(0)
+	numberRentalCosts := int64(0)
 	invoiceDesc := fmt.Sprintf("LineBlocs annual invoice for %s", billingInfo.InvoiceDue)
 
-	logger.Infof("Workspace total annual membership costs is %f", annualMembershipCosts)
+	logger.Infof("Workspace total annual membership costs is %d", annualMembershipCosts)
 
 	debitsRows, err := s.db.Query(
 		"SELECT id, source, module_id, cents, created_at FROM users_debits WHERE user_id = ? AND created_at BETWEEN ? AND ?",
@@ -569,7 +581,7 @@ func (s *BillingService) processAnnual(task models.BillingTask) error {
     var debitID int
     var debitSource string
     var debitModuleID int
-    var debitCostCents float64
+    var debitCostCents int64
     var debitCreatedAt time.Time
 
     remainingAnnualMinutes := plan.MinutesPerMonth * 12
@@ -591,13 +603,13 @@ func (s *BillingService) processAnnual(task models.BillingTask) error {
             }
 
             callDurationMinutes := float64(call.DurationNumber) / 60.0
-            charge, err := utils.ComputeAmountToCharge(debitCostCents, remainingAnnualMinutes, callDurationMinutes)
+            charge, err := utils.ComputeAmountToCharge(float64(debitCostCents), remainingAnnualMinutes, callDurationMinutes)
             if err != nil {
                 logger.WithError(err).Error("error computing call charge")
                 continue
             }
 
-            callTollsCosts += charge
+            callTollsCosts += int64(charge)
             remainingAnnualMinutes -= callDurationMinutes
 
         case "NUMBER_RENTAL":
@@ -606,7 +618,7 @@ func (s *BillingService) processAnnual(task models.BillingTask) error {
                 logger.WithError(err).Error("error getting DID")
                 continue
             }
-            numberRentalCosts += float64(did.MonthlyCost)
+            numberRentalCosts += int64(did.MonthlyCost)
         }
     }
 
@@ -630,14 +642,14 @@ func (s *BillingService) processAnnual(task models.BillingTask) error {
             continue
         }
 
-        recordingCentsPerByte := math.Round(baseCosts.RecordingsPerByte * recordingSizeBytes)
-        charge, err := utils.ComputeAmountToCharge(recordingCentsPerByte, remainingAnnualRecordings, recordingSizeBytes)
+        recordingCentsPerByte := int64(math.Round(baseCosts.RecordingsPerByte * recordingSizeBytes))
+        charge, err := utils.ComputeAmountToCharge(float64(recordingCentsPerByte), remainingAnnualRecordings, recordingSizeBytes)
         if err != nil {
             logger.WithError(err).Error("error calculating recording charge")
             continue
         }
 
-        recordingCosts += charge
+        recordingCosts += int64(charge)
         remainingAnnualRecordings -= recordingSizeBytes
     }
 
@@ -667,14 +679,14 @@ func (s *BillingService) processAnnual(task models.BillingTask) error {
             continue
         }
 
-        faxCosts += charge
+        faxCosts += int64(charge)
         remainingAnnualFaxUnits--
     }
 
     totalCosts = annualMembershipCosts + callTollsCosts + recordingCosts + faxCosts + numberRentalCosts
 
     logger.Infof(
-        "Final annual costs are membership: %f, call tolls: %f, recordings: %f, fax: %f, did rentals: %f, total: %f (cents)",
+        "Final annual costs are membership: %d, call tolls: %d, recordings: %d, fax: %d, did rentals: %d, total: %d (cents)",
         annualMembershipCosts, callTollsCosts, recordingCosts, faxCosts, numberRentalCosts, totalCosts,
     )
 
@@ -699,14 +711,14 @@ func (s *BillingService) processAnnual(task models.BillingTask) error {
 
     if plan.PayAsYouGo {
         remainingBalance := billingInfo.RemainingBalanceCents
-        balanceAfterCharge := remainingBalance - totalCosts
-        chargeAmount, err := utils.ComputeAmountToCharge(totalCosts, remainingBalance, balanceAfterCharge)
+        balanceAfterCharge := remainingBalance - int64(totalCosts)
+        chargeAmount, err := utils.ComputeAmountToCharge(float64(totalCosts), float64(remainingBalance), float64(balanceAfterCharge))
         if err != nil {
             logger.WithError(err).Error("error calculating charge amount")
             return err
         }
 
-        if remainingBalance >= totalCosts {
+        if remainingBalance >= int64(totalCosts) {
             confNumber, err := utils.CreateInvoiceConfirmationNumber()
             if err != nil {
                 logger.WithError(err).Error("error generating confirmation number")
@@ -719,7 +731,7 @@ func (s *BillingService) processAnnual(task models.BillingTask) error {
                 return err
             }
             defer updateStmt.Close()
-            _, err = updateStmt.Exec(totalCosts, confNumber, invoiceID)
+            _, err = updateStmt.Exec(int64(totalCosts), confNumber, invoiceID)
             if err != nil {
                 logger.WithError(err).Error("error updating invoice")
                 return err
@@ -731,7 +743,7 @@ func (s *BillingService) processAnnual(task models.BillingTask) error {
                 return err
             }
             defer updateStmt.Close()
-            _, err = updateStmt.Exec(chargeAmount, invoiceID)
+            _, err = updateStmt.Exec(int64(chargeAmount), invoiceID)
             if err != nil {
                 logger.WithError(err).Error("error updating invoice")
                 return err
@@ -767,14 +779,14 @@ func (s *BillingService) processAnnual(task models.BillingTask) error {
                 return err
             }
             defer successStmt.Close()
-            _, err = successStmt.Exec(totalCosts, now, invoiceID)
+            _, err = successStmt.Exec(int64(totalCosts), now, invoiceID)
             if err != nil {
                 logger.WithError(err).Error("error updating invoice")
                 return err
             }
         }
     } else {
-        cardChargeAmount := int(math.Ceil(totalCosts))
+        cardChargeAmount := int(math.Ceil(float64(totalCosts)))
         invoice := models.UserInvoice{
             Id:          int(invoiceID),
             Cents:       cardChargeAmount,
@@ -784,7 +796,7 @@ func (s *BillingService) processAnnual(task models.BillingTask) error {
         err := s.paymentRepository.ChargeCustomer(billingParams, user, workspace, &invoice)
         if err != nil {
             logger.WithError(err).Error("error charging user")
-            updateStmt, err := s.db.Prepare("UPDATE users_invoices SET status = 'INCOMPLETE', source = 'CARD', cents_collected = 0.0 WHERE id = ?")
+            updateStmt, err := s.db.Prepare("UPDATE users_invoices SET status = 'INCOMPLETE', source = 'CARD', cents_collected = 0 WHERE id = ?")
             if err != nil {
                 logger.WithError(err).Error("could not prepare update query")
                 return err
@@ -810,7 +822,7 @@ func (s *BillingService) processAnnual(task models.BillingTask) error {
             return err
         }
         defer finalStmt.Close()
-        _, err = finalStmt.Exec(totalCosts, confirmNumber, invoiceID)
+        _, err = finalStmt.Exec(int64(totalCosts), confirmNumber, invoiceID)
         if err != nil {
             logger.WithError(err).Error("error updating invoice")
             return err

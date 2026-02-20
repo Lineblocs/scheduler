@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 
+	helpers "github.com/Lineblocs/go-helpers"
 	"lineblocs.com/crontabs/internal/billing"
 	"lineblocs.com/crontabs/models"
 	"lineblocs.com/crontabs/repository"
@@ -14,6 +15,9 @@ import (
 )
 
 func main() {
+	logDestination := utils.Config("LOG_DESTINATIONS")
+	helpers.InitLogrus(logDestination)
+
 	db, _ := utils.GetDBConnection()
 	wRepo := repository.NewWorkspaceRepository(db)
 	pRepo := repository.NewPaymentRepository(db)

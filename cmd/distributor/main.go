@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	helpers "github.com/Lineblocs/go-helpers"
 	"lineblocs.com/crontabs/models"
 	"lineblocs.com/crontabs/utils"
 
@@ -21,6 +22,10 @@ import (
 var rdb *redis.Client
 
 func main() {
+
+	logDestination := utils.Config("LOG_DESTINATIONS")
+	helpers.InitLogrus(logDestination)
+
 	// 1. INITIALIZE REDIS
 	redisURL := os.Getenv("REDIS_URL")
 	opt, err := redis.ParseURL(redisURL)

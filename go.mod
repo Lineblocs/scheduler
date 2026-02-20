@@ -4,7 +4,7 @@ go 1.24.0
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
-	github.com/Lineblocs/go-helpers v0.0.4-0.20260220081303-ae5e58b37712
+	github.com/Lineblocs/go-helpers v0.0.4-0.20260220211431-df7c3b6bd492
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/joho/godotenv v1.5.1
 	github.com/mailgun/mailgun-go/v4 v4.23.0

@@ -2,6 +2,7 @@ package utils
 
 import (
 	"bytes"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -175,6 +176,8 @@ func (c *DBConn) GetBillingParams() (*BillingParams, error) {
 
 	data := make(map[string]string)
 	data["stripe_key"] = stripePrivateKey
+	// TODO: in the future, we will want to have retry attempts be configurable in the db as well. For now, we can just set it to 0 since we are not doing any retries yet
+	data["retry_attempts"] = "0"
 	params := BillingParams{
 		Provider: "stripe",
 		Data:     data,
@@ -274,5 +277,30 @@ func GetWorkspaceUserCount(db *sql.DB, workspaceId int) int {
 }
 
 func CreateInvoiceConfirmationNumber() (string, error) {
-	return "123", nil
+	b := make([]byte, 12)
+	_, err := rand.Read(b)
+	if err != nil {
+		helpers.Log(logrus.ErrorLevel, fmt.Sprintf("error generating confirmation number: %s", err.Error()))
+		return "", err
+	}
+	confirmationNumber := fmt.Sprintf("INV-%08X", b[:4])
+	return confirmationNumber, nil
 }
+
+func CreateTaxMetadata(callTollsCosts int64, recordingCosts int64, faxCosts int64, membershipCosts int64, numberRentalCosts int64) string {
+	taxMetadata := map[string]int64{
+		"call_tolls_costs":    callTollsCosts,
+		"recording_costs":    recordingCosts,
+		"fax_costs":          faxCosts,
+		"membership_costs":   membershipCosts,
+		"number_rental_costs": numberRentalCosts,
+	}
+	b, err := json.Marshal(taxMetadata)
+	if err != nil {
+		helpers.Log(logrus.ErrorLevel, fmt.Sprintf("error marshaling tax metadata: %s\r\n", err.Error()))
+		return ""
+	}
+
+	return string(b)
+}
+
