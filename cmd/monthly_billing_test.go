@@ -11,7 +11,7 @@ import (
 	helpers "github.com/Lineblocs/go-helpers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
-	"lineblocs.com/crontabs/mocks"
+	"lineblocs.com/scheduler/mocks"
 )
 
 type MonthlyBillingTestCase struct {

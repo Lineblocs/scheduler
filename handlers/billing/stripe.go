@@ -9,7 +9,7 @@ import (
 	"github.com/stripe/stripe-go/v72"
 	"github.com/stripe/stripe-go/v72/paymentintent"
 	"github.com/sirupsen/logrus"
-	models "lineblocs.com/crontabs/models"
+	models "lineblocs.com/scheduler/models"
 	"database/sql"
 	helpers "github.com/Lineblocs/go-helpers"
 )

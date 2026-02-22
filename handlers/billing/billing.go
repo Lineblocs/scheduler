@@ -4,7 +4,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 
 	helpers "github.com/Lineblocs/go-helpers"
-	models "lineblocs.com/crontabs/models"
+	models "lineblocs.com/scheduler/models"
 )
 
 type BillingHandler interface {

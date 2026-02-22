@@ -11,3 +11,11 @@ type BillingTask struct {
 	PlanToBill             int    `json:"plan_to_bill"` // The plan ID they are actually being charged for
 	ProviderSubscriptionID string `json:"provider_subscription_id"`
 }
+
+type RecordingTask struct {
+	ID              int    `json:"id"`
+	Status          string `json:"status"`
+	StorageID       int    `json:"storage_id"`
+	StorageServerIP string `json:"storage_server_ip"`
+	Trim            string `json:"trim"`
+}

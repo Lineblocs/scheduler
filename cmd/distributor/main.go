@@ -10,8 +10,8 @@ import (
 	"time"
 
 	helpers "github.com/Lineblocs/go-helpers"
-	"lineblocs.com/crontabs/models"
-	"lineblocs.com/crontabs/utils"
+	"lineblocs.com/scheduler/models"
+	"lineblocs.com/scheduler/utils"
 
 	_ "github.com/go-sql-driver/mysql"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -61,6 +61,12 @@ func main() {
 			runBillingDistributor("MONTHLY_DEBUG")
 		})
 	}
+
+	// PRODUCTION: Recordings Distribution (Every 5 minutes)
+	_, _ = c.AddFunc("*/5 * * * *", func() {
+		log.Println("[PROD] Triggering Recordings Distribution...")
+		runRecordingsDistributor()
+	})
 
 	log.Printf("Billing Task Distributor started. Connected to Redis at: %s", opt.Addr)
 	c.Start()
@@ -249,5 +255,137 @@ func runBillingDistributor(scheduleType string) {
 		}
 	}
 
-	log.Printf("[%s] Distribution Finished. Total Queued: %d", scheduleType, count)
+
+
+	log.Printf("[%s] Distribution Finished. Total Billing Queued: %d", scheduleType, count)
+}
+
+func runRecordingsDistributor() {
+	// 1-hour safety timeout for the entire process
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Hour)
+	defer cancel()
+
+	// --- GLOBAL LOCK LOGIC ---
+	lockKeySuffix := time.Now().Format("2006-01-02-15:04") // Unique per minute
+	lockTTL := 4 * time.Minute                            // Expire before next 5-minute interval
+	globalLockKey := fmt.Sprintf("recordings_run_lock:%s", lockKeySuffix)
+
+	// SET NX: Only one instance/replica will succeed here
+	locked, err := rdb.SetNX(ctx, globalLockKey, "running", lockTTL).Result()
+	if err != nil || !locked {
+		log.Printf("[RECORDINGS] Skip: Lock %s held by another instance.", globalLockKey)
+		return
+	}
+
+	log.Printf("[RECORDINGS] Lock Acquired. Processing recordings distribution...")
+
+	// --- CONNECTIONS ---
+	db, err := utils.GetDBConnection()
+	if err != nil {
+		log.Printf("[RECORDINGS] Database connection failed: %v", err)
+		return
+	}
+
+	conn, err := amqp.Dial(os.Getenv("QUEUE_URL"))
+	if err != nil {
+		log.Printf("[RECORDINGS] RabbitMQ connection failed: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	ch, err := conn.Channel()
+	if err != nil {
+		log.Printf("[RECORDINGS] RabbitMQ channel creation failed: %v", err)
+		return
+	}
+	defer ch.Close()
+
+	// Put channel in Confirm Mode to ensure messages aren't lost
+	if err := ch.Confirm(false); err != nil {
+		log.Printf("[RECORDINGS] Could not enable RabbitMQ confirms: %v", err)
+		return
+	}
+	confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 1))
+
+	qRecordings, err := ch.QueueDeclare("recordings_tasks", true, false, false, false, nil)
+	if err != nil {
+		log.Printf("[RECORDINGS] RabbitMQ recordings queue declaration failed: %v", err)
+		return
+	}
+
+	// --- DATABASE QUERY ---
+	status := "completed"
+	recordingsResults, err := db.QueryContext(ctx, "SELECT id, status, storage_id, storage_server_ip, trim FROM recordings WHERE status = ?", status)
+	if err != nil {
+		log.Printf("[RECORDINGS] DB Query Error: %v", err)
+		return
+	}
+	defer recordingsResults.Close()
+
+	// --- DISTRIBUTION LOOP ---
+	recordingsCount := 0
+	for recordingsResults.Next() {
+		var recordingID, storageID int
+		var recordingStatus, storageServerIP string
+		var trim sql.NullString
+
+		err := recordingsResults.Scan(
+			&recordingID,
+			&recordingStatus,
+			&storageID,
+			&storageServerIP,
+			&trim,
+		)
+		if err != nil {
+			log.Printf("[RECORDINGS] Row scan error: %v", err)
+			continue
+		}
+
+		// DEDUPLICATION: Ensures no recording is queued twice
+		recordingsDedupeKey := fmt.Sprintf("queued:recording:%d:%s", recordingID, lockKeySuffix)
+		isNew, err := rdb.SetNX(ctx, recordingsDedupeKey, "true", 31*24*time.Hour).Result()
+		if err != nil || !isNew {
+			continue // Already queued, skip
+		}
+
+		// --- BUILD RECORDINGS PAYLOAD ---
+		recordingTask := models.RecordingTask{
+			ID:              recordingID,
+			Status:          recordingStatus,
+			StorageID:       storageID,
+			StorageServerIP: storageServerIP,
+			Trim:            trim.String,
+		}
+
+		body, _ := json.Marshal(recordingTask)
+
+		// --- PUBLISH TO RECORDINGS QUEUE ---
+		err = ch.PublishWithContext(ctx, "", qRecordings.Name, false, false, amqp.Publishing{
+			DeliveryMode: amqp.Persistent,
+			ContentType:  "application/json",
+			Body:         body,
+		})
+
+		if err != nil {
+			rdb.Del(ctx, recordingsDedupeKey)
+			log.Printf("[RECORDINGS] Publish error for ID %d: %v", recordingID, err)
+			continue
+		}
+
+		// Confirm receipt by RabbitMQ
+		select {
+		case confirmed := <-confirms:
+			if !confirmed.Ack {
+				rdb.Del(ctx, recordingsDedupeKey)
+				log.Printf("[RECORDINGS] RabbitMQ NACK for recording %d", recordingID)
+			} else {
+				recordingsCount++
+			}
+		case <-time.After(5 * time.Second):
+			rdb.Del(ctx, recordingsDedupeKey)
+			log.Printf("[RECORDINGS] Timeout waiting for RabbitMQ ACK for recording %d", recordingID)
+		}
+	}
+
+	log.Printf("[RECORDINGS] Distribution Finished. Total Recordings Queued: %d", recordingsCount)
 }

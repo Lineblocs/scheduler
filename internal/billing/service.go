@@ -8,9 +8,9 @@ import (
 
 	helpers "github.com/Lineblocs/go-helpers"
 	"github.com/sirupsen/logrus"
-	"lineblocs.com/crontabs/models"
-	"lineblocs.com/crontabs/repository"
-	"lineblocs.com/crontabs/utils"
+	"lineblocs.com/scheduler/models"
+	"lineblocs.com/scheduler/repository"
+	"lineblocs.com/scheduler/utils"
 )
 
 type BillingData struct {
@@ -690,22 +690,25 @@ func (s *BillingService) processAnnual(task models.BillingTask) error {
         annualMembershipCosts, callTollsCosts, recordingCosts, faxCosts, numberRentalCosts, totalCosts,
     )
 
-    insertStmt, err := s.db.Prepare("INSERT INTO users_invoices (`cents`, `call_costs`, `recording_costs`, `fax_costs`, `membership_costs`, `number_costs`, `status`, `user_id`, `workspace_id`, `created_at`, `updated_at`) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-    if err != nil {
-        logger.WithError(err).Error("could not prepare invoice insert query")
-        return err
-    }
-    defer insertStmt.Close()
-
-    result, err := insertStmt.Exec(totalCosts, callTollsCosts, recordingCosts, faxCosts, annualMembershipCosts, numberRentalCosts, "INCOMPLETE", workspace.CreatorId, workspace.Id, now, now)
-    if err != nil {
-        logger.WithError(err).Error("error creating invoice")
-        return err
+    annualCosts := &BillingCosts{
+        MembershipCosts:   annualMembershipCosts,
+        CallTollsCosts:    callTollsCosts,
+        RecordingCosts:    recordingCosts,
+        FaxCosts:          faxCosts,
+        NumberRentalCosts: numberRentalCosts,
+        TotalCosts:        totalCosts,
+        InvoiceDesc:       invoiceDesc,
     }
 
-    invoiceID, err := result.LastInsertId()
+    annualBillingData := &BillingData{
+        Workspace:         workspace,
+        User:              user,
+        BillingInfo:       billingInfo,
+        Now:               now,
+    }
+
+    invoiceID, err := s.createInvoice(annualCosts, annualBillingData, logger)
     if err != nil {
-        logger.WithError(err).Error("could not get insert id")
         return err
     }
 

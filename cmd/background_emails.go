@@ -12,7 +12,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/mailgun/mailgun-go/v4"
 	"github.com/sirupsen/logrus"
-	utils "lineblocs.com/crontabs/utils"
+	utils "lineblocs.com/scheduler/utils"
 )
 
 func notifyForCardExpiry(db *sql.DB) error {

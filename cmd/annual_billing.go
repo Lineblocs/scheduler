@@ -11,9 +11,9 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/mailgun/mailgun-go/v4"
 	"github.com/sirupsen/logrus"
-	models "lineblocs.com/crontabs/models"
-	"lineblocs.com/crontabs/repository"
-	utils "lineblocs.com/crontabs/utils"
+	models "lineblocs.com/scheduler/models"
+	"lineblocs.com/scheduler/repository"
+	utils "lineblocs.com/scheduler/utils"
 )
 
 type AnnualBillingJob struct {

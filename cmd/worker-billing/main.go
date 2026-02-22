@@ -6,10 +6,10 @@ import (
 	"os"
 
 	helpers "github.com/Lineblocs/go-helpers"
-	"lineblocs.com/crontabs/internal/billing"
-	"lineblocs.com/crontabs/models"
-	"lineblocs.com/crontabs/repository"
-	"lineblocs.com/crontabs/utils"
+	"lineblocs.com/scheduler/internal/billing"
+	"lineblocs.com/scheduler/models"
+	"lineblocs.com/scheduler/repository"
+	"lineblocs.com/scheduler/utils"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )

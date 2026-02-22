@@ -1,17 +1,20 @@
-module lineblocs.com/crontabs
+module lineblocs.com/scheduler
 
 go 1.24.0
 
 require (
+	github.com/CyCoreSystems/ari/v5 v5.3.1
 	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/Lineblocs/go-helpers v0.0.4-0.20260220211431-df7c3b6bd492
+	github.com/aws/aws-sdk-go v1.55.8
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/joho/godotenv v1.5.1
 	github.com/mailgun/mailgun-go/v4 v4.23.0
 	github.com/pkg/errors v0.9.1
+	github.com/redis/go-redis/v9 v9.18.0
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/sirupsen/logrus v1.9.4
 	github.com/stretchr/testify v1.11.1
-	github.com/stripe/stripe-go/v71 v71.48.0
 	github.com/stripe/stripe-go/v72 v72.122.0
 )
 
@@ -34,13 +37,12 @@ require (
 	github.com/clockworksoul/smudge v1.0.1 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/go-redis/redis v6.15.9+incompatible // indirect
-	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/innix/logrus-cloudwatch v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/rabbitmq/amqp091-go v1.10.0 // indirect
+	github.com/rabbitmq/amqp091-go v1.10.0
 	github.com/satori/go.uuid v1.2.0 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/t-tomalak/logrus-easy-formatter v0.0.0-20190827215021-c074f06c5816 // indirect
@@ -52,22 +54,30 @@ require (
 )
 
 require (
-	github.com/aws/aws-sdk-go v1.55.8 // indirect
 	github.com/aws/aws-sdk-go-v2/config v1.32.9 // indirect
 	github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.63.1 // indirect
 	github.com/aws/aws-sdk-go-v2/service/signin v1.0.5 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/go-chi/chi/v5 v5.2.5 // indirect
+	github.com/go-stack/stack v1.8.0 // indirect
+	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/inconshreveable/log15 v0.0.0-20201112154412-8562bdadbbac // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/mailgun/errors v0.5.0 // indirect
+	github.com/mattn/go-colorable v0.1.8 // indirect
+	github.com/mattn/go-isatty v0.0.12 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
+	github.com/oklog/ulid v1.3.1 // indirect
 	github.com/onsi/ginkgo v1.16.5 // indirect
 	github.com/onsi/gomega v1.34.1 // indirect
-	github.com/redis/go-redis/v9 v9.18.0 // indirect
-	github.com/robfig/cron/v3 v3.0.1 // indirect
+	github.com/rotisserie/eris v0.4.1 // indirect
+	github.com/stripe/stripe-go/v71 v71.48.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
+	golang.org/x/net v0.27.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
+
+replace github.com/CyCoreSystems/ari/v5 => github.com/nadirhamid/ari/v5 v5.2.6

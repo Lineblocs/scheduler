@@ -7,9 +7,9 @@ import (
 
 	helpers "github.com/Lineblocs/go-helpers"
 	"github.com/sirupsen/logrus"
-	"lineblocs.com/crontabs/handlers/billing"
-	"lineblocs.com/crontabs/models"
-	"lineblocs.com/crontabs/utils"
+	"lineblocs.com/scheduler/handlers/billing"
+	"lineblocs.com/scheduler/models"
+	"lineblocs.com/scheduler/utils"
 )
 
 type PaymentService struct {

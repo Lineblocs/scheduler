@@ -8,8 +8,8 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/mailgun/mailgun-go/v4"
 	"github.com/sirupsen/logrus"
-	models "lineblocs.com/crontabs/models"
-	utils "lineblocs.com/crontabs/utils"
+	models "lineblocs.com/scheduler/models"
+	utils "lineblocs.com/scheduler/utils"
 )
 
 // cron tab to remove unset password users

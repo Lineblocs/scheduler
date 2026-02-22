@@ -7,9 +7,9 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/mailgun/mailgun-go/v4"
 	"github.com/sirupsen/logrus"
-	cmd "lineblocs.com/crontabs/cmd"
-	"lineblocs.com/crontabs/repository"
-	"lineblocs.com/crontabs/utils"
+	cmd "lineblocs.com/scheduler/cmd"
+	"lineblocs.com/scheduler/repository"
+	"lineblocs.com/scheduler/utils"
 	//now "github.com/jinzhu/now"
 )
 
