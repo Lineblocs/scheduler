@@ -43,7 +43,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v3
         with:
-          images: lineblocs/crontabs
+          images: lineblocs/scheduler
 
       - name: Build and push
         uses: docker/build-push-action@v2
