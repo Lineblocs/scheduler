@@ -14,6 +14,17 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+type RabbitMQPublisher struct {
+	channel *amqp.Channel
+}
+
+func (p *RabbitMQPublisher) Publish(queue string, message []byte) error {
+	return p.channel.Publish("", queue, false, false, amqp.Publishing{
+		ContentType: "application/json",
+		Body:        message,
+	})
+}
+
 func main() {
 	logDestination := utils.Config("LOG_DESTINATIONS")
 	helpers.InitLogrus(logDestination)
@@ -21,8 +32,6 @@ func main() {
 	db, _ := utils.GetDBConnection()
 	wRepo := repository.NewWorkspaceRepository(db)
 	pRepo := repository.NewPaymentRepository(db)
-	billingSvc := billing.NewBillingService(db, wRepo, pRepo)
-
 
 	conn, err := amqp.Dial(os.Getenv("QUEUE_URL"))
 	if err != nil {
@@ -35,6 +44,9 @@ func main() {
 		panic(err)
 	}
 	defer ch.Close()
+
+	publisher := &RabbitMQPublisher{channel: ch}
+	billingSvc := billing.NewBillingServiceWithPublisher(db, wRepo, pRepo, publisher)
 
 	// Prefetch(1) ensures the worker doesn't hog all tasks if one is slow
 	ch.Qos(1, 0, false)
