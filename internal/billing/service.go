@@ -2,6 +2,7 @@ package billing
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"math"
 	"time"
@@ -39,7 +40,13 @@ type BillingService struct {
 	db                  *sql.DB
 	workspaceRepository repository.WorkspaceRepository
 	paymentRepository   repository.PaymentRepository
+	rabbitmqPublisher   RabbitMQPublisher
 }
+
+type RabbitMQPublisher interface {
+	Publish(queue string, message []byte) error
+}
+
 
 func NewBillingService(db *sql.DB, wRepo repository.WorkspaceRepository, pRepo repository.PaymentRepository) *BillingService {
 	return &BillingService{
@@ -49,12 +56,58 @@ func NewBillingService(db *sql.DB, wRepo repository.WorkspaceRepository, pRepo r
 	}
 }
 
+func NewBillingServiceWithPublisher(db *sql.DB, wRepo repository.WorkspaceRepository, pRepo repository.PaymentRepository, publisher RabbitMQPublisher) *BillingService {
+	return &BillingService{
+		db:                  db,
+		workspaceRepository: wRepo,
+		paymentRepository:   pRepo,
+		rabbitmqPublisher:   publisher,
+	}
+}
+
+func (s *BillingService) publishFailedPayment(task models.BillingTask, reason string, logger *logrus.Entry) {
+	if s.rabbitmqPublisher == nil {
+		return
+	}
+
+	failedTask := models.FailedBillingTask{
+		RunID:          task.RunID,
+		WorkspaceID:    task.WorkspaceID,
+		SubscriptionID: task.SubscriptionID,
+		CreatorID:      task.CreatorID,
+		Reason:         reason,
+	}
+
+	messageBytes, err := json.Marshal(failedTask)
+	if err != nil {
+		logger.WithError(err).Error("error marshaling failed billing task")
+		return
+	}
+
+	err = s.rabbitmqPublisher.Publish("failed_payments", messageBytes)
+	if err != nil {
+		logger.WithError(err).Error("error publishing failed payment event")
+		return
+	}
+
+	logger.Infof("Published failed payment event for workspace %d, subscription %d", task.WorkspaceID, task.SubscriptionID)
+}
+
 // ProcessTask routes to the correct logic based on the task type
 func (s *BillingService) ProcessTask(task models.BillingTask) error {
+	logger := logrus.WithField("component", "billing").WithField("workspace_id", task.WorkspaceID).WithField("run_id", task.RunID)
 	if task.BillingType == "annual" {
-		return s.processAnnual(task)
+		err := s.processAnnual(task)
+		if err != nil {
+			s.publishFailedPayment(task, err.Error(), logger)
+		}
+		return err
 	}
-	return s.processMonthly(task)
+	err := s.processMonthly(task)
+	if err != nil {
+		s.publishFailedPayment(task, err.Error(), logger)
+	}
+	return err
 }
 
 func (s *BillingService) processMonthly(task models.BillingTask) error {
@@ -371,6 +424,7 @@ func (s *BillingService) chargeWithCredits(invoiceID int64, costs *BillingCosts,
 		return s.chargeCreditsOnly(invoiceID, int64(costs.TotalCosts), logger)
 	}
 
+	logger.Warn("Insufficient credits for payment")
 	return s.markInvoiceChargeIncomplete(invoiceID, logger)
 }
 
@@ -417,7 +471,8 @@ func (s *BillingService) chargeWithCard(invoiceID int64, costs *BillingCosts, da
 	err := s.paymentRepository.ChargeCustomer(data.BillingParams.(*utils.BillingParams), data.User, data.Workspace, &invoice)
 	if err != nil {
 		logger.WithError(err).Error("error charging user")
-		return s.markInvoiceChargeIncomplete(invoiceID, logger)
+		s.markInvoiceChargeIncomplete(invoiceID, logger)
+		return err
 	}
 
 	return s.markInvoiceChargeSuccess(invoiceID, int64(costs.TotalCosts), logger)

@@ -15,7 +15,16 @@ type BillingTask struct {
 type RecordingTask struct {
 	ID              int    `json:"id"`
 	Status          string `json:"status"`
-	StorageID       int    `json:"storage_id"`
+	StorageID       string `json:"storage_id"`
 	StorageServerIP string `json:"storage_server_ip"`
 	Trim            string `json:"trim"`
+}
+
+// FailedBillingTask represents a notification to the Laravel app that a payment failed
+type FailedBillingTask struct {
+	RunID          string `json:"run_id"`
+	WorkspaceID    int    `json:"workspace_id"`
+	SubscriptionID int    `json:"subscription_id"`
+	CreatorID      int    `json:"creator_id"`
+	Reason         string `json:"reason"`
 }

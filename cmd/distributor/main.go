@@ -325,7 +325,8 @@ func runRecordingsDistributor() {
 	// --- DISTRIBUTION LOOP ---
 	recordingsCount := 0
 	for recordingsResults.Next() {
-		var recordingID, storageID int
+		var recordingID int
+		var storageID string
 		var recordingStatus, storageServerIP string
 		var trim sql.NullString
 
