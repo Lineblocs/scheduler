@@ -47,9 +47,6 @@ type RabbitMQPublisher interface {
 	Publish(queue string, message []byte) error
 }
 
-type RabbitMQPublisher interface {
-	Publish(queue string, message []byte) error
-}
 
 func NewBillingService(db *sql.DB, wRepo repository.WorkspaceRepository, pRepo repository.PaymentRepository) *BillingService {
 	return &BillingService{
