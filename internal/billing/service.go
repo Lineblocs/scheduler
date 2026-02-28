@@ -93,26 +93,55 @@ func (s *BillingService) publishFailedPayment(task models.BillingTask, reason st
 	logger.Infof("Published failed payment event for workspace %d, subscription %d", task.WorkspaceID, task.SubscriptionID)
 }
 
+func (s *BillingService) publishPaymentReceipt(task models.BillingTask, paymentAmount int64, cardLast4 string, cardBrand string, logger *logrus.Entry) {
+	if s.rabbitmqPublisher == nil {
+		return
+	}
+
+	receiptTask := models.PaymentReceiptTask{
+		RunID:          task.RunID,
+		WorkspaceID:    task.WorkspaceID,
+		SubscriptionID: task.SubscriptionID,
+		CreatorID:      task.CreatorID,
+		CardLast4:      cardLast4,
+		CardBrand:      cardBrand,
+		PaymentAmount:  float64(paymentAmount) / 100.0,
+		Timestamp:      time.Now().Unix(),
+	}
+
+	messageBytes, err := json.Marshal(receiptTask)
+	if err != nil {
+		logger.WithError(err).Error("error marshaling payment receipt task")
+		return
+	}
+
+	err = s.rabbitmqPublisher.Publish("payment_receipts", messageBytes)
+	if err != nil {
+		logger.WithError(err).Error("error publishing payment receipt event")
+		return
+	}
+
+	logger.Infof("Published payment receipt event for workspace %d, subscription %d, amount: %d cents", task.WorkspaceID, task.SubscriptionID, paymentAmount)
+}
+
 // ProcessTask routes to the correct logic based on the task type
 func (s *BillingService) ProcessTask(task models.BillingTask) error {
 	logger := logrus.WithField("component", "billing").WithField("workspace_id", task.WorkspaceID).WithField("run_id", task.RunID)
 	if task.BillingType == "annual" {
-		err := s.processAnnual(task)
+		err := s.processAnnual(task, logger)
 		if err != nil {
 			s.publishFailedPayment(task, err.Error(), logger)
 		}
 		return err
 	}
-	err := s.processMonthly(task)
+	err := s.processMonthly(task, logger)
 	if err != nil {
 		s.publishFailedPayment(task, err.Error(), logger)
 	}
 	return err
 }
 
-func (s *BillingService) processMonthly(task models.BillingTask) error {
-	logger := logrus.WithField("component", "monthly_billing").WithField("workspace_id", task.WorkspaceID)
-
+func (s *BillingService) processMonthly(task models.BillingTask, logger *logrus.Entry) error {
 	billingData, err := s.loadBillingData(task, "MONTHLY", logger)
 	if err != nil {
 		return err
@@ -128,7 +157,7 @@ func (s *BillingService) processMonthly(task models.BillingTask) error {
 		return err
 	}
 
-	return s.chargeInvoice(invoiceID, costs, billingData, logger)
+	return s.chargeInvoice(invoiceID, costs, billingData, task, logger)
 }
 
 
@@ -408,27 +437,27 @@ func (s *BillingService) createInvoice(costs *BillingCosts, data *BillingData, l
 	return invoiceID, nil
 }
 
-func (s *BillingService) chargeInvoice(invoiceID int64, costs *BillingCosts, data *BillingData, logger *logrus.Entry) error {
+func (s *BillingService) chargeInvoice(invoiceID int64, costs *BillingCosts, data *BillingData, task models.BillingTask, logger *logrus.Entry) error {
 	logger.Infof("Charging user %d, on workspace %d, plan type %s", data.User.Id, data.Workspace.Id, data.Workspace.Plan)
 
 	if data.Plan.PayAsYouGo {
-		return s.chargeWithCredits(invoiceID, costs, data, logger)
+		return s.chargeWithCredits(invoiceID, costs, data, task, logger)
 	}
-	return s.chargeWithCard(invoiceID, costs, data, logger)
+	return s.chargeWithCard(invoiceID, costs, data, task, logger)
 }
 
-func (s *BillingService) chargeWithCredits(invoiceID int64, costs *BillingCosts, data *BillingData, logger *logrus.Entry) error {
+func (s *BillingService) chargeWithCredits(invoiceID int64, costs *BillingCosts, data *BillingData, task models.BillingTask, logger *logrus.Entry) error {
 	remainingBalance := int64(data.BillingInfo.RemainingBalanceCents)
 
 	if remainingBalance >= int64(costs.TotalCosts) {
-		return s.chargeCreditsOnly(invoiceID, int64(costs.TotalCosts), logger)
+		return s.chargeCreditsOnly(invoiceID, int64(costs.TotalCosts), data, task, logger)
 	}
 
 	logger.Warn("Insufficient credits for payment")
 	return s.markInvoiceChargeIncomplete(invoiceID, logger)
 }
 
-func (s *BillingService) chargeCreditsOnly(invoiceID int64, totalCosts int64, logger *logrus.Entry) error {
+func (s *BillingService) chargeCreditsOnly(invoiceID int64, totalCosts int64, data *BillingData, task models.BillingTask, logger *logrus.Entry) error {
 	logger.Info("User has enough credits. Charging balance")
 
 	confNumber, err := utils.CreateInvoiceConfirmationNumber()
@@ -450,12 +479,14 @@ func (s *BillingService) chargeCreditsOnly(invoiceID int64, totalCosts int64, lo
 		return err
 	}
 
+	s.publishPaymentReceipt(task, totalCosts, "", "CREDITS", logger)
+
 	return nil
 }
 
 
 
-func (s *BillingService) chargeWithCard(invoiceID int64, costs *BillingCosts, data *BillingData, logger *logrus.Entry) error {
+func (s *BillingService) chargeWithCard(invoiceID int64, costs *BillingCosts, data *BillingData, task models.BillingTask, logger *logrus.Entry) error {
 	logger.Info("Charging recurringly with card")
 
 	cardChargeAmount := int(math.Ceil(float64(costs.TotalCosts)))
@@ -468,12 +499,14 @@ func (s *BillingService) chargeWithCard(invoiceID int64, costs *BillingCosts, da
 		InvoiceDesc: costs.InvoiceDesc,
 	}
 
-	err := s.paymentRepository.ChargeCustomer(data.BillingParams.(*utils.BillingParams), data.User, data.Workspace, &invoice)
+	chargeResult, err := s.paymentRepository.ChargeCustomer(data.BillingParams.(*utils.BillingParams), data.User, data.Workspace, &invoice)
 	if err != nil {
 		logger.WithError(err).Error("error charging user")
 		s.markInvoiceChargeIncomplete(invoiceID, logger)
 		return err
 	}
+
+	s.publishPaymentReceipt(task, int64(costs.TotalCosts), chargeResult.CardLast4, chargeResult.CardBrand, logger)
 
 	return s.markInvoiceChargeSuccess(invoiceID, int64(costs.TotalCosts), logger)
 }
@@ -552,9 +585,8 @@ func (s *BillingService) markInvoiceChargeSuccess(invoiceID int64, totalCosts in
 	return nil
 }
 
-func (s *BillingService) processAnnual(task models.BillingTask) error {
+func (s *BillingService) processAnnual(task models.BillingTask, logger *logrus.Entry) error {
 	conn := utils.NewDBConn(s.db)
-	logger := logrus.WithField("component", "annual_billing").WithField("workspace_id", task.WorkspaceID)
 
 	billingParams, err := conn.GetBillingParams()
 	if err != nil {
@@ -814,7 +846,7 @@ func (s *BillingService) processAnnual(task models.BillingTask) error {
                 InvoiceDesc: invoiceDesc,
             }
 
-            err = s.paymentRepository.ChargeCustomer(billingParams, user, workspace, &invoice)
+            chargeResult, err := s.paymentRepository.ChargeCustomer(billingParams, user, workspace, &invoice)
             if err != nil {
                 logger.WithError(err).Error("error charging customer card")
                 failStmt, err := s.db.Prepare("UPDATE users_invoices SET source = 'CARD', status = 'INCOMPLETE', num_attempts = 1, last_attempted = ? WHERE id = ?")
@@ -830,6 +862,8 @@ func (s *BillingService) processAnnual(task models.BillingTask) error {
                 }
                 return err
             }
+
+            s.publishPaymentReceipt(task, int64(totalCosts), chargeResult.CardLast4, chargeResult.CardBrand, logger)
 
             successStmt, err := s.db.Prepare("UPDATE users_invoices SET status = 'COMPLETE', source ='CARD', cents_collected = ?, last_attempted = ?, num_attempts = 1 WHERE id = ?")
             if err != nil {
@@ -851,7 +885,7 @@ func (s *BillingService) processAnnual(task models.BillingTask) error {
             InvoiceDesc: invoiceDesc,
         }
 
-        err := s.paymentRepository.ChargeCustomer(billingParams, user, workspace, &invoice)
+        chargeResult, err := s.paymentRepository.ChargeCustomer(billingParams, user, workspace, &invoice)
         if err != nil {
             logger.WithError(err).Error("error charging user")
             updateStmt, err := s.db.Prepare("UPDATE users_invoices SET status = 'INCOMPLETE', source = 'CARD', cents_collected = 0 WHERE id = ?")
@@ -867,6 +901,8 @@ func (s *BillingService) processAnnual(task models.BillingTask) error {
             }
             return err
         }
+
+        s.publishPaymentReceipt(task, int64(totalCosts), chargeResult.CardLast4, chargeResult.CardBrand, logger)
 
         confirmNumber, err := utils.CreateInvoiceConfirmationNumber()
         if err != nil {

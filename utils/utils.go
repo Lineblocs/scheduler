@@ -126,11 +126,11 @@ func ChargeCustomer(dbConn *sql.DB, billingParams *BillingParams, user *helpers.
     case "stripe":
         key := billingParams.Data["stripe_key"]
         hndl = billing.NewStripeBillingHandler(dbConn, key, retryAttempts)
-        err = hndl.ChargeCustomer(user, workspace, invoice)
+        _, err = hndl.ChargeCustomer(user, workspace, invoice)
     case "braintree":
         key := billingParams.Data["braintree_api_key"]
         hndl = billing.NewBraintreeBillingHandler(dbConn, key, retryAttempts)
-        err = hndl.ChargeCustomer(user, workspace, invoice)
+        _, err = hndl.ChargeCustomer(user, workspace, invoice)
     }
 
     return err
