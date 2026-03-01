@@ -275,3 +275,31 @@ func CreateTaxMetadata(callTollsCosts, recordingCosts, faxCosts, membershipCosts
     b, _ := json.Marshal(taxMetadata)
     return string(b)
 }
+
+func CalculateInitialCharge(price float64, billingType string) (float64, time.Time) {
+    now := time.Now()
+    var nextAnchor time.Time
+    
+    if billingType == "MONTHLY" {
+        // Next 1st of the month
+        nextAnchor = time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, now.Location())
+    } else if billingType == "ANNUAL" {
+        // Next Jan 1st
+        nextAnchor = time.Date(now.Year()+1, 1, 1, 0, 0, 0, 0, now.Location())
+    }
+
+    // Days in current month or year
+    currentPeriodStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+    if billingType == "ANNUAL" {
+        currentPeriodStart = time.Date(now.Year(), 1, 1, 0, 0, 0, 0, now.Location())
+    }
+
+    totalDaysInPeriod := nextAnchor.Sub(currentPeriodStart).Hours() / 24
+    daysRemaining := nextAnchor.Sub(now).Hours() / 24
+
+    // Prorated Amount
+    amount := (price / totalDaysInPeriod) * daysRemaining
+    
+    // Standard rounding for currency
+    return math.Round(amount*100) / 100, nextAnchor
+}

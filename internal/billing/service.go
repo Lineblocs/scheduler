@@ -125,6 +125,7 @@ func (s *BillingService) publishPaymentReceipt(task models.BillingTask, paymentA
 }
 
 // ProcessTask routes to the correct logic based on the task type
+/*
 func (s *BillingService) ProcessTask(task models.BillingTask) error {
 	logger := logrus.WithField("component", "billing").WithField("workspace_id", task.WorkspaceID).WithField("run_id", task.RunID)
 	if task.BillingType == "annual" {
@@ -139,6 +140,104 @@ func (s *BillingService) ProcessTask(task models.BillingTask) error {
 		s.publishFailedPayment(task, err.Error(), logger)
 	}
 	return err
+}
+
+func (s *BillingService) ProcessTask(task models.BillingTask) error {
+    // ... logger setup ...
+    var err error
+
+    // Added logic: route to proration if the task action is 'immediate'
+    if task.Action == models.ActionImmediate {
+        err = s.processImmediateProrated(task, logger)
+    } else if task.BillingType == "ANNUAL" {
+        err = s.processAnnual(task, logger)
+    } else {
+        err = s.processMonthly(task, logger)
+    }
+    // ... error handling ...
+
+    // Added logic: update the anchor date so the distributor doesn't double-bill
+    return s.updateSubscriptionAnchor(task, logger)
+}
+*/
+
+// --- CORE ROUTING (ProcessTask) ---
+
+func (s *BillingService) ProcessTask(task models.BillingTask) error {
+	logger := logrus.WithField("component", "billing").
+		WithField("workspace_id", task.WorkspaceID).
+		WithField("run_id", task.RunID).
+		WithField("action", task.Action)
+
+	var err error
+
+	// 1. Route based on Action (Immediate Signup/Upgrade vs. Regular Renewal)
+	if task.Action == "immediate" {
+		err = s.processImmediateProrated(task, logger)
+	} else if task.BillingType == "ANNUAL" {
+		err = s.processAnnual(task, logger)
+	} else {
+		err = s.processMonthly(task, logger)
+	}
+
+	if err != nil {
+		s.publishFailedPayment(task, err.Error(), logger)
+		return err
+	}
+
+	// 2. IMPORTANT: Move the 'next_billing_date' forward to the 1st of the next period
+	// This prevents the Distributor from double-billing the user.
+	return s.updateSubscriptionAnchor(task, logger)
+}
+
+// --- PRORATION & ANCHOR UPDATES ---
+
+func (s *BillingService) processImmediateProrated(task models.BillingTask, logger *logrus.Entry) error {
+	billingData, err := s.loadBillingData(task, task.BillingType, logger)
+	if err != nil {
+		return err
+	}
+
+	// Use the pre-calculated amount passed in the task for new signups
+	costs := &BillingCosts{
+		MembershipCosts: int64(task.Amount * 100),
+		TotalCosts:      int64(task.Amount * 100),
+		InvoiceDesc:     fmt.Sprintf("Initial prorated charge for %s plan", task.BillingType),
+	}
+
+	invoiceID, err := s.createInvoice(costs, billingData, logger)
+	if err != nil {
+		return err
+	}
+
+	return s.chargeInvoice(invoiceID, costs, billingData, task, logger)
+}
+
+func (s *BillingService) updateSubscriptionAnchor(task models.BillingTask, logger *logrus.Entry) error {
+	var nextDate time.Time
+	now := time.Now()
+
+	// Calculate the next "Global 1st" anchor
+	if task.BillingType == "ANNUAL" {
+		nextDate = time.Date(now.Year()+1, 1, 1, 0, 0, 0, 0, now.Location())
+	} else {
+		nextDate = time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, now.Location())
+	}
+
+	_, err := s.db.Exec(`
+		UPDATE subscriptions 
+		SET next_billing_date = ?, 
+		    last_billed_at = NOW(),
+		    updated_at = NOW() 
+		WHERE id = ?`, nextDate, task.SubscriptionID)
+
+	if err != nil {
+		logger.WithError(err).Error("failed to update next_billing_date anchor")
+		return err
+	}
+
+	logger.Infof("Subscription %d anchor pushed to %s", task.SubscriptionID, nextDate.Format("2006-01-02"))
+	return nil
 }
 
 func (s *BillingService) processMonthly(task models.BillingTask, logger *logrus.Entry) error {
