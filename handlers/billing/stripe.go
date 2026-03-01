@@ -41,17 +41,19 @@ func NewStripeBillingHandler(dbConn *sql.DB, stripeKey string, retryAttempts int
 	return item
 }
 
-func (hndl *StripeBillingHandler) ChargeCustomer(user *helpers.User, workspace *helpers.Workspace, invoice *models.UserInvoice) error {
+func (hndl *StripeBillingHandler) ChargeCustomer(user *helpers.User, workspace *helpers.Workspace, invoice *models.UserInvoice) (*ChargeResult, error) {
     db := hndl.DBConn
     stripe.Key = hndl.StripeKey
 
     var id int
     var paymentMethodId string
-    row := db.QueryRow("SELECT id, stripe_payment_method_id FROM users_cards WHERE `workspace_id`=? AND `primary` = 1", workspace.Id)
+    var cardLast4 string
+    var cardBrand string
+    row := db.QueryRow("SELECT id, stripe_payment_method_id, last_4, issuer FROM users_cards WHERE `workspace_id`=? AND `primary` = 1", workspace.Id)
 
-    err := row.Scan(&id, &paymentMethodId)
+    err := row.Scan(&id, &paymentMethodId, &cardLast4, &cardBrand)
     if err != nil {
-        return err
+        return nil, err
     }
 
     domain := os.Getenv("DEPLOYMENT_DOMAIN")
@@ -85,10 +87,21 @@ func (hndl *StripeBillingHandler) ChargeCustomer(user *helpers.User, workspace *
 
     if err != nil {
         helpers.Log(logrus.ErrorLevel, fmt.Sprintf("Stripe Charge Failed: %v", err))
-        return err
+        return nil, err
     }
 
     helpers.Log(logrus.InfoLevel, fmt.Sprintf("Stripe PaymentIntent processed. ID: %s Status: %s", res.ID, res.Status))
 
-    return nil
+    chargeResult := &ChargeResult{
+        PaymentIntentID: res.ID,
+        PaymentMethodID: paymentMethodId,
+        Amount:          amountCents,
+        Currency:        string(stripe.CurrencyUSD),
+        Status:          string(res.Status),
+        Created:         res.Created,
+        CardBrand:       cardBrand,
+        CardLast4:       cardLast4,
+    }
+
+    return chargeResult, nil
 }

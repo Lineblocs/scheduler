@@ -17,7 +17,7 @@ type PaymentService struct {
 }
 
 type PaymentRepository interface {
-	ChargeCustomer(billingParams *utils.BillingParams, user *helpers.User, workspace *helpers.Workspace, invoice *models.UserInvoice) error
+	ChargeCustomer(billingParams *utils.BillingParams, user *helpers.User, workspace *helpers.Workspace, invoice *models.UserInvoice) (*billing.ChargeResult, error)
 	GetSubscription(subId int) (*helpers.Subscription, error)
 	GetServicePlans() ([]helpers.ServicePlan, error)
 }
@@ -41,8 +41,9 @@ func (ps *PaymentService) GetSubscription(subId int) (*helpers.Subscription, err
 	return helpers.GetSubscriptionFromDB(subId)
 }
 
-func (ps *PaymentService) ChargeCustomer(billingParams *utils.BillingParams, user *helpers.User, workspace *helpers.Workspace, invoice *models.UserInvoice) error {
+func (ps *PaymentService) ChargeCustomer(billingParams *utils.BillingParams, user *helpers.User, workspace *helpers.Workspace, invoice *models.UserInvoice) (*billing.ChargeResult, error) {
 	var err error
+	var result *billing.ChargeResult
 	var hndl billing.BillingHandler
 	retryAttempts := getRetryAttempts(billingParams.Data["retry_attempts"])
 
@@ -50,7 +51,7 @@ func (ps *PaymentService) ChargeCustomer(billingParams *utils.BillingParams, use
 	case "stripe":
 		key := billingParams.Data["stripe_key"]
 		hndl = billing.NewStripeBillingHandler(ps.db, key, retryAttempts)
-		err = hndl.ChargeCustomer(user, workspace, invoice)
+		result, err = hndl.ChargeCustomer(user, workspace, invoice)
 		if err != nil {
 			helpers.Log(logrus.ErrorLevel, "error charging user..\r\n")
 			helpers.Log(logrus.ErrorLevel, err.Error())
@@ -58,14 +59,14 @@ func (ps *PaymentService) ChargeCustomer(billingParams *utils.BillingParams, use
 	case "braintree":
 		key := billingParams.Data["braintree_api_key"]
 		hndl = billing.NewBraintreeBillingHandler(ps.db, key, retryAttempts)
-		err = hndl.ChargeCustomer(user, workspace, invoice)
+		result, err = hndl.ChargeCustomer(user, workspace, invoice)
 		if err != nil {
 			helpers.Log(logrus.ErrorLevel, "error charging user..\r\n")
 			helpers.Log(logrus.ErrorLevel, err.Error())
 		}
 	}
 
-	return err
+	return result, err
 }
 
 func getRetryAttempts(s string) int {

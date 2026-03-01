@@ -26,8 +26,8 @@ func NewBraintreeBillingHandler(dbConn *sql.DB, BraintreeKey string, retryAttemp
 	return &item
 }
 
-func (hndl *BraintreeBillingHandler) ChargeCustomer(user *helpers.User, workspace *helpers.Workspace, invoice *models.UserInvoice) error {
+func (hndl *BraintreeBillingHandler) ChargeCustomer(user *helpers.User, workspace *helpers.Workspace, invoice *models.UserInvoice) (*ChargeResult, error) {
 	//_ := hndl.DBConn
 	// todo: implement handler
-	return errors.New("not implemented yet")
+	return nil, errors.New("not implemented yet")
 }
