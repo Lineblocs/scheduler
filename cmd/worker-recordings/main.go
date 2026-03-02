@@ -10,6 +10,10 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+const (
+	queueName = "recording_tasks"
+)
+
 func main() {
 	db, _ := utils.GetDBConnection()
 	ariClient, _ := utils.CreateARIConnection()
@@ -22,10 +26,16 @@ func main() {
 		panic(err)
 	}
 
-	ch, _ := conn.Channel()
+	ch, err := conn.Channel()
+	if err != nil {
+		panic(err)
+	}
 	
 	// Ensure queue exists
-	q, _ := ch.QueueDeclare("recording_tasks", true, false, false, false, nil)
+	q, err := ch.QueueDeclare(queueName, true, false, false, false, nil)
+	if err != nil {
+		panic(err)
+	}
 
 	msgs, _ := ch.Consume(q.Name, "", false, false, false, false, nil)
 

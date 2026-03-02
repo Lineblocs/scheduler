@@ -14,6 +14,10 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+const (
+	billingTasksQueue = "billing_tasks"
+)
+
 type RabbitMQPublisher struct {
 	channel *amqp.Channel
 }
@@ -48,9 +52,15 @@ func main() {
 	publisher := &RabbitMQPublisher{channel: ch}
 	billingSvc := billing.NewBillingServiceWithPublisher(db, wRepo, pRepo, publisher)
 
+	// Declare the queue
+	q, err := ch.QueueDeclare(billingTasksQueue, true, false, false, false, nil)
+	if err != nil {
+		panic(err)
+	}
+
 	// Prefetch(1) ensures the worker doesn't hog all tasks if one is slow
 	ch.Qos(1, 0, false)
-	msgs, err := ch.Consume("billing_tasks", "", false, false, false, false, nil)
+	msgs, err := ch.Consume(q.Name, "", false, false, false, false, nil)
 	if err != nil {
 		panic(err)
 	}
