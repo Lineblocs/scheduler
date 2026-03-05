@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"time"
 
@@ -35,12 +34,12 @@ type BillingMetrics struct {
 }
 
 type BillingContext struct {
-	WorkspaceID    int
-	UserID         int
-	StartTime      time.Time
-	EndTime        time.Time
-	CorrelationID  string
-	Logger         *logrus.Entry
+	WorkspaceID   int
+	UserID        int
+	StartTime     time.Time
+	EndTime       time.Time
+	CorrelationID string
+	Logger        *logrus.Entry
 }
 
 func NewMonthlyBillingJob(db *sql.DB, workspaceRepository repository.WorkspaceRepository, paymentRepository repository.PaymentRepository) *MonthlyBillingJob {
@@ -263,15 +262,16 @@ func (mb *MonthlyBillingJob) MonthlyBilling() error {
 		// try to charge the debit
 		if plan.PayAsYouGo {
 			remainingBalance := billingInfo.RemainingBalanceCents
-			minRemaining := remainingBalance - totalCosts
-			charge, err := utils.ComputeAmountToCharge(totalCosts, remainingBalance, minRemaining)
+			remainingBalanceFloat := float64(remainingBalance)
+			minRemaining := remainingBalanceFloat - totalCosts
+			charge, err := utils.ComputeAmountToCharge(totalCosts, remainingBalanceFloat, minRemaining)
 			if err != nil {
 				helpers.Log(logrus.ErrorLevel, "error calculating charge amount\r\n")
 				helpers.Log(logrus.ErrorLevel, err.Error())
 
 				continue
 			}
-			if remainingBalance >= totalCosts { //user has enough credits
+			if remainingBalanceFloat >= totalCosts { //user has enough credits
 				helpers.Log(logrus.InfoLevel, "User has enough credits. Charging balance\r\n")
 
 				confNumber, err := utils.CreateInvoiceConfirmationNumber()
@@ -313,7 +313,7 @@ func (mb *MonthlyBillingJob) MonthlyBilling() error {
 					Id:          int(invoiceId),
 					Cents:       cents,
 					InvoiceDesc: invoiceDesc}
-				err = mb.paymentRepository.ChargeCustomer(billingParams, user, workspace, &invoice)
+				_, err = mb.paymentRepository.ChargeCustomer(billingParams, user, workspace, &invoice)
 				if err != nil {
 					// could not charge card.
 					// update invoice record and mark as outstanding
@@ -350,7 +350,7 @@ func (mb *MonthlyBillingJob) MonthlyBilling() error {
 				Id:          int(invoiceId),
 				Cents:       cents,
 				InvoiceDesc: invoiceDesc}
-			err := mb.paymentRepository.ChargeCustomer(billingParams, user, workspace, &invoice)
+			_, err = mb.paymentRepository.ChargeCustomer(billingParams, user, workspace, &invoice)
 			if err != nil {
 				helpers.Log(logrus.ErrorLevel, "error charging user..\r\n")
 				helpers.Log(logrus.ErrorLevel, err.Error())

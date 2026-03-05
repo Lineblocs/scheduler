@@ -262,7 +262,7 @@ func SendBackgroundEmails() error {
 			}
 			amount := math.Round(float64(balance) * percentOfTrigger)
 
-			if billingInfo.RemainingBalanceCents <= amount {
+			if float64(billingInfo.RemainingBalanceCents) <= amount {
 				args := make(map[string]string)
 				args["triggerPercent"] = fmt.Sprintf("%f", percentOfTrigger)
 				args["triggerBalance"] = fmt.Sprintf("%d", balance)

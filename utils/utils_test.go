@@ -21,15 +21,15 @@ func TestGetPlan(t *testing.T) {
 
 		plans := []helpers.ServicePlan{
 			{
-				Name: "starter",
+				KeyName: "starter",
 			},
 			{
-				Name: "premium",
+				KeyName: "premium",
 			},
 		}
 
 		plan := GetPlan(plans, workspace)
-		assert.Equal(t, workspace.Plan, plan.Name)
+		assert.Equal(t, workspace.Plan, plan.KeyName)
 	})
 
 	t.Run("Should return empty plan", func(t *testing.T) {
@@ -41,10 +41,10 @@ func TestGetPlan(t *testing.T) {
 
 		plans := []helpers.ServicePlan{
 			{
-				Name: "starter",
+				KeyName: "starter",
 			},
 			{
-				Name: "premium",
+				KeyName: "premium",
 			},
 		}
 
