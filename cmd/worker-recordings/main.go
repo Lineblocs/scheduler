@@ -2,12 +2,12 @@ package main
 
 import (
 	"encoding/json"
-	"log"
-	"os"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"lineblocs.com/scheduler/internal/storage"
 	"lineblocs.com/scheduler/models"
 	"lineblocs.com/scheduler/utils"
-	amqp "github.com/rabbitmq/amqp091-go"
+	"log"
+	"os"
 )
 
 const (
@@ -30,14 +30,17 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	
+
 	// Ensure queue exists
 	q, err := ch.QueueDeclare(queueName, true, false, false, false, nil)
 	if err != nil {
 		panic(err)
 	}
 
-	msgs, _ := ch.Consume(q.Name, "", false, false, false, false, nil)
+	msgs, err := ch.Consume(q.Name, "", false, false, false, false, nil)
+	if err != nil {
+		panic(err)
+	}
 
 	log.Println("S3 Recording Worker Started...")
 

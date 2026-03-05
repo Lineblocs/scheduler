@@ -6,6 +6,7 @@ import (
 	lineblocs "github.com/Lineblocs/go-helpers"
 	mock "github.com/stretchr/testify/mock"
 
+	billing "lineblocs.com/scheduler/handlers/billing"
 	models "lineblocs.com/scheduler/models"
 
 	utils "lineblocs.com/scheduler/utils"
@@ -25,21 +26,33 @@ func (_m *PaymentRepository) EXPECT() *PaymentRepository_Expecter {
 }
 
 // ChargeCustomer provides a mock function with given fields: billingParams, user, workspace, invoice
-func (_m *PaymentRepository) ChargeCustomer(billingParams *utils.BillingParams, user *lineblocs.User, workspace *lineblocs.Workspace, invoice *models.UserInvoice) error {
+func (_m *PaymentRepository) ChargeCustomer(billingParams *utils.BillingParams, user *lineblocs.User, workspace *lineblocs.Workspace, invoice *models.UserInvoice) (*billing.ChargeResult, error) {
 	ret := _m.Called(billingParams, user, workspace, invoice)
 
 	if len(ret) == 0 {
 		panic("no return value specified for ChargeCustomer")
 	}
 
-	var r0 error
-	if rf, ok := ret.Get(0).(func(*utils.BillingParams, *lineblocs.User, *lineblocs.Workspace, *models.UserInvoice) error); ok {
+	var r0 *billing.ChargeResult
+	var r1 error
+	if rf, ok := ret.Get(0).(func(*utils.BillingParams, *lineblocs.User, *lineblocs.Workspace, *models.UserInvoice) (*billing.ChargeResult, error)); ok {
+		return rf(billingParams, user, workspace, invoice)
+	}
+	if rf, ok := ret.Get(0).(func(*utils.BillingParams, *lineblocs.User, *lineblocs.Workspace, *models.UserInvoice) *billing.ChargeResult); ok {
 		r0 = rf(billingParams, user, workspace, invoice)
 	} else {
-		r0 = ret.Error(0)
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*billing.ChargeResult)
+		}
 	}
 
-	return r0
+	if rf, ok := ret.Get(1).(func(*utils.BillingParams, *lineblocs.User, *lineblocs.Workspace, *models.UserInvoice) error); ok {
+		r1 = rf(billingParams, user, workspace, invoice)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
 }
 
 // PaymentRepository_ChargeCustomer_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ChargeCustomer'
@@ -63,12 +76,70 @@ func (_c *PaymentRepository_ChargeCustomer_Call) Run(run func(billingParams *uti
 	return _c
 }
 
-func (_c *PaymentRepository_ChargeCustomer_Call) Return(_a0 error) *PaymentRepository_ChargeCustomer_Call {
-	_c.Call.Return(_a0)
+func (_c *PaymentRepository_ChargeCustomer_Call) Return(_a0 *billing.ChargeResult, _a1 error) *PaymentRepository_ChargeCustomer_Call {
+	_c.Call.Return(_a0, _a1)
 	return _c
 }
 
-func (_c *PaymentRepository_ChargeCustomer_Call) RunAndReturn(run func(*utils.BillingParams, *lineblocs.User, *lineblocs.Workspace, *models.UserInvoice) error) *PaymentRepository_ChargeCustomer_Call {
+func (_c *PaymentRepository_ChargeCustomer_Call) RunAndReturn(run func(*utils.BillingParams, *lineblocs.User, *lineblocs.Workspace, *models.UserInvoice) (*billing.ChargeResult, error)) *PaymentRepository_ChargeCustomer_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// GetSubscription provides a mock function with given fields: subId
+func (_m *PaymentRepository) GetSubscription(subId int) (*lineblocs.Subscription, error) {
+	ret := _m.Called(subId)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetSubscription")
+	}
+
+	var r0 *lineblocs.Subscription
+	var r1 error
+	if rf, ok := ret.Get(0).(func(int) (*lineblocs.Subscription, error)); ok {
+		return rf(subId)
+	}
+	if rf, ok := ret.Get(0).(func(int) *lineblocs.Subscription); ok {
+		r0 = rf(subId)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*lineblocs.Subscription)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(int) error); ok {
+		r1 = rf(subId)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// PaymentRepository_GetSubscription_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'GetSubscription'
+type PaymentRepository_GetSubscription_Call struct {
+	*mock.Call
+}
+
+// GetSubscription is a helper method to define mock.On call
+//   - subId int
+func (_e *PaymentRepository_Expecter) GetSubscription(subId interface{}) *PaymentRepository_GetSubscription_Call {
+	return &PaymentRepository_GetSubscription_Call{Call: _e.mock.On("GetSubscription", subId)}
+}
+
+func (_c *PaymentRepository_GetSubscription_Call) Run(run func(subId int)) *PaymentRepository_GetSubscription_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(int))
+	})
+	return _c
+}
+
+func (_c *PaymentRepository_GetSubscription_Call) Return(_a0 *lineblocs.Subscription, _a1 error) *PaymentRepository_GetSubscription_Call {
+	_c.Call.Return(_a0, _a1)
+	return _c
+}
+
+func (_c *PaymentRepository_GetSubscription_Call) RunAndReturn(run func(int) (*lineblocs.Subscription, error)) *PaymentRepository_GetSubscription_Call {
 	_c.Call.Return(run)
 	return _c
 }

@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"database/sql"
 	"fmt"
-	"lineblocs.com/scheduler/models"
+	"github.com/CyCoreSystems/ari/v5"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
-	"github.com/CyCoreSystems/ari/v5"
+	"lineblocs.com/scheduler/models"
 )
 
 type RecordingService struct {
@@ -27,10 +27,10 @@ func NewRecordingService(db *sql.DB, ari *ari.Client, settings *models.Settings)
 }
 
 func (s *RecordingService) ProcessRecording(task models.RecordingTask) error {
-	fmt.Printf("Processing Recording ID: %d, StorageID: %d\n", task.ID, task.StorageID)
+	fmt.Printf("Processing Recording ID: %d, StorageID: %s\n", task.ID, task.StorageID)
 
 	// 1. Get File from ARI
-	src := ari.NewKey(ari.StoredRecordingKey, fmt.Sprintf("%d", task.StorageID))
+	src := ari.NewKey(ari.StoredRecordingKey, fmt.Sprintf("%s", task.StorageID))
 	data, err := (*s.ariClient).StoredRecording().File(src)
 	if err != nil {
 		s.db.Exec("UPDATE recordings SET relocation_attempts = relocation_attempts + 1 WHERE id = ?", task.ID)
@@ -43,7 +43,7 @@ func (s *RecordingService) ProcessRecording(task models.RecordingTask) error {
 	}
 
 	// 3. Upload to S3
-	filename := fmt.Sprintf("%d.wav", task.StorageID)
+	filename := fmt.Sprintf("%s.wav", task.StorageID)
 	s3Url, err := s.uploadToS3(data, filename)
 	if err != nil {
 		return err

@@ -11,6 +11,7 @@ import (
 	helpers "github.com/Lineblocs/go-helpers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	billing "lineblocs.com/scheduler/handlers/billing"
 	"lineblocs.com/scheduler/mocks"
 )
 
@@ -34,7 +35,7 @@ func testMonthlyServicePlans() []helpers.ServicePlan {
 			MinutesPerMonth:          200.0,
 			BaseCosts:                24.99,
 			ImIntegrations:           true,
-			Name:                     "starter",
+			KeyName:                  "starter",
 			ProductivityIntegrations: true,
 			RecordingSpace:           1024.0,
 		},
@@ -42,7 +43,7 @@ func testMonthlyServicePlans() []helpers.ServicePlan {
 			MinutesPerMonth:          200.0,
 			BaseCosts:                49.99,
 			ImIntegrations:           true,
-			Name:                     "pro",
+			KeyName:                  "pro",
 			ProductivityIntegrations: true,
 			RecordingSpace:           1024.0,
 		},
@@ -112,7 +113,7 @@ func TestMonthlyBilling(t *testing.T) {
 		mockWorkspace.EXPECT().GetWorkspaceBillingInfo(mock.Anything).Return(testBillingInfo, nil)
 		mockWorkspace.EXPECT().GetUserFromDB(mock.Anything).Return(nil, errors.New("failed to get user"))
 
-		mockPayment.EXPECT().ChargeCustomer(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		mockPayment.EXPECT().ChargeCustomer(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(&billing.ChargeResult{}, nil)
 		mockPayment.EXPECT().GetServicePlans().Return(testMonthlyServicePlans(), nil)
 
 		db, mockSql, err := sqlmock.New()
@@ -161,7 +162,7 @@ func TestMonthlyBilling(t *testing.T) {
 		mockWorkspace.EXPECT().GetUserFromDB(mock.Anything).Return(testUser, nil)
 		mockWorkspace.EXPECT().GetDIDFromDB(mock.Anything).Return(did, nil)
 
-		mockPayment.EXPECT().ChargeCustomer(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		mockPayment.EXPECT().ChargeCustomer(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(&billing.ChargeResult{}, nil)
 		mockPayment.EXPECT().GetServicePlans().Return(testMonthlyServicePlans(), nil)
 
 		db, mockSql, err := sqlmock.New()
@@ -189,7 +190,7 @@ func TestMonthlyBilling(t *testing.T) {
 			WillReturnRows(sqlmock.NewRows([]string{"id", "monthly_cost"}).
 				AddRow(moduleId, monthlyCost))
 
-		debitQuery := "INSERT INTO users_debits (`source`, `status`, `cents`, `module_id`, `user_id`, `workspace_id`, `created_at`) VALUES ( ?, ?, ?, ?, ?, ?)"
+		debitQuery := "INSERT INTO users_debits (`source`, `status`, `cents`, `module_id`, `user_id`, `workspace_id`, `created_at`) VALUES (?, ?, ?, ?, ?, ?, ?)"
 		mockSql.ExpectPrepare(regexp.QuoteMeta(debitQuery)).
 			ExpectExec().
 			WithArgs("NUMBER_RENTAL", "INCOMPLETE", monthlyCost, moduleId, testUser.Id, testWorkspace.Id, sqlmock.AnyArg()).
@@ -267,7 +268,7 @@ func TestMonthlyBilling(t *testing.T) {
 		mockWorkspace.EXPECT().GetUserFromDB(mock.Anything).Return(testUser, nil)
 		mockWorkspace.EXPECT().GetCallFromDB(mock.Anything).Return(call, nil)
 
-		mockPayment.EXPECT().ChargeCustomer(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		mockPayment.EXPECT().ChargeCustomer(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(&billing.ChargeResult{}, nil)
 		mockPayment.EXPECT().GetServicePlans().Return(testMonthlyServicePlans(), nil)
 
 		db, mockSql, err := sqlmock.New()
@@ -295,7 +296,7 @@ func TestMonthlyBilling(t *testing.T) {
 			WillReturnRows(sqlmock.NewRows([]string{"id", "monthly_cost"}).
 				AddRow(moduleId, monthlyCost))
 
-		debitQuery := "INSERT INTO users_debits (`source`, `status`, `cents`, `module_id`, `user_id`, `workspace_id`, `created_at`) VALUES ( ?, ?, ?, ?, ?, ?)"
+		debitQuery := "INSERT INTO users_debits (`source`, `status`, `cents`, `module_id`, `user_id`, `workspace_id`, `created_at`) VALUES (?, ?, ?, ?, ?, ?, ?)"
 		mockSql.ExpectPrepare(regexp.QuoteMeta(debitQuery)).
 			ExpectExec().
 			WithArgs("NUMBER_RENTAL", "INCOMPLETE", monthlyCost, moduleId, testUser.Id, testWorkspace.Id, sqlmock.AnyArg()).
@@ -440,7 +441,7 @@ func testMonthlyBillingSetup(mockSql sqlmock.Sqlmock, mockWorkspace *mocks.Works
 
 	mockPayment.EXPECT().GetServicePlans().Return(testMonthlyServicePlans(), nil)
 
-	mockPayment.EXPECT().ChargeCustomer(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	mockPayment.EXPECT().ChargeCustomer(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(&billing.ChargeResult{}, nil)
 
 	mockSql.ExpectQuery("SELECT payment_gateway FROM customizations").
 		WillReturnRows(sqlmock.NewRows([]string{"payment_gateway"}).
@@ -460,7 +461,7 @@ func testMonthlyBillingSetup(mockSql sqlmock.Sqlmock, mockWorkspace *mocks.Works
 		WillReturnRows(sqlmock.NewRows([]string{"id", "monthly_cost"}).
 			AddRow(sampleData.ModuleId, sampleData.Cents))
 
-	debitQuery := "INSERT INTO users_debits (`source`, `status`, `cents`, `module_id`, `user_id`, `workspace_id`, `created_at`) VALUES ( ?, ?, ?, ?, ?, ?)"
+	debitQuery := "INSERT INTO users_debits (`source`, `status`, `cents`, `module_id`, `user_id`, `workspace_id`, `created_at`) VALUES (?, ?, ?, ?, ?, ?, ?)"
 	mockSql.ExpectPrepare(regexp.QuoteMeta(debitQuery)).
 		ExpectExec().
 		WithArgs("NUMBER_RENTAL", "INCOMPLETE", sampleData.Cents, sampleData.ModuleId, sampleData.User.Id, sampleData.Workspace.Id, sqlmock.AnyArg()).

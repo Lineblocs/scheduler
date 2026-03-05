@@ -69,7 +69,11 @@ func main() {
 
 	for d := range msgs {
 		var task models.BillingTask
-		json.Unmarshal(d.Body, &task)
+		if err := json.Unmarshal(d.Body, &task); err != nil {
+			log.Printf("Invalid billing task payload: %v", err)
+			d.Ack(false) // Drop malformed messages
+			continue
+		}
 
 		err := billingSvc.ProcessTask(task)
 		if err != nil {

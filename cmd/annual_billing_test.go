@@ -10,6 +10,7 @@ import (
 	helpers "github.com/Lineblocs/go-helpers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	billing "lineblocs.com/scheduler/handlers/billing"
 	"lineblocs.com/scheduler/mocks"
 )
 
@@ -19,7 +20,7 @@ func testAnnualServicePlans() []helpers.ServicePlan {
 			MinutesPerMonth:          200.0,
 			BaseCosts:                24.99,
 			ImIntegrations:           true,
-			Name:                     "starter",
+			KeyName:                  "starter",
 			ProductivityIntegrations: true,
 			RecordingSpace:           1024.0,
 		},
@@ -183,7 +184,7 @@ func TestAnnualBilling(t *testing.T) {
 		mockWorkspace.EXPECT().GetWorkspaceFromDB(mock.Anything).Return(testWorkspace, nil)
 		mockWorkspace.EXPECT().GetUserFromDB(mock.Anything).Return(testUser, nil)
 
-		mockPayment.EXPECT().ChargeCustomer(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		mockPayment.EXPECT().ChargeCustomer(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(&billing.ChargeResult{}, nil)
 		mockPayment.EXPECT().GetServicePlans().Return(testAnnualServicePlans(), nil)
 
 		db, mockSql, err := sqlmock.New()
@@ -252,7 +253,7 @@ func TestAnnualBilling(t *testing.T) {
 		mockWorkspace.EXPECT().GetWorkspaceFromDB(mock.Anything).Return(testWorkspace, nil)
 		mockWorkspace.EXPECT().GetUserFromDB(mock.Anything).Return(testUser, nil)
 
-		mockPayment.EXPECT().ChargeCustomer(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(errors.New("unable to charge customer"))
+		mockPayment.EXPECT().ChargeCustomer(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return((*billing.ChargeResult)(nil), errors.New("unable to charge customer"))
 		mockPayment.EXPECT().GetServicePlans().Return(testAnnualServicePlans(), nil)
 
 		db, mockSql, err := sqlmock.New()
@@ -321,7 +322,7 @@ func TestAnnualBilling(t *testing.T) {
 		mockWorkspace.EXPECT().GetWorkspaceFromDB(mock.Anything).Return(testWorkspace, nil)
 		mockWorkspace.EXPECT().GetUserFromDB(mock.Anything).Return(testUser, nil)
 
-		mockPayment.EXPECT().ChargeCustomer(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		mockPayment.EXPECT().ChargeCustomer(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(&billing.ChargeResult{}, nil)
 		mockPayment.EXPECT().GetServicePlans().Return(testAnnualServicePlans(), nil)
 
 		db, mockSql, err := sqlmock.New()
