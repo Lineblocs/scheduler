@@ -4,8 +4,8 @@ SHELL:=/bin/sh
 # Variables
 BINARY_DIR=bin
 DISTRIBUTOR_BINARY=$(BINARY_DIR)/distributor
-BILLING_WORKER_BINARY=$(BINARY_DIR)/worker-billing
-RECORDINGS_WORKER_BINARY=$(BINARY_DIR)/worker-recordings
+WORKER_BINARY=$(BINARY_DIR)/worker
+CLI_BINARY=$(BINARY_DIR)/cli
 
 .PHONY: help
 help: # Show help for each of the Makefile recipes.
@@ -19,21 +19,21 @@ help: # Show help for each of the Makefile recipes.
 all: build # Build both distributor and worker binaries
 
 .PHONY: build
-build: # Build both distributor and worker binaries
+build: # Build all binaries (distributor, worker, CLI)
 	@echo "Building binaries..."
 	mkdir -p $(BINARY_DIR)
 	go build -o $(DISTRIBUTOR_BINARY) ./cmd/distributor/main.go
-	go build -o $(BILLING_WORKER_BINARY) ./cmd/worker-billing/main.go
-	go build -o $(RECORDINGS_WORKER_BINARY) ./cmd/worker-recordings/main.go
+	go build -o $(WORKER_BINARY) ./cmd/worker/main.go
+	go build -o $(CLI_BINARY) ./cmd/cli/main.go
 	@echo "Binaries available in ./bin"
 
 .PHONY: run-distributor
 run-distributor: # Runs the distributor locally using go run
 	go run -race ./cmd/distributor/main.go
 
-.PHONY: run-billing-worker
-run-billing-worker: # Runs the billing worker locally using go run
-	go run -race ./cmd/worker-billing/main.go
+.PHONY: run-worker
+run-worker: # Runs the unified worker locally using go run
+	go run -race ./cmd/worker/main.go
 
 ########################################################################################################################
 ##@ Setup
