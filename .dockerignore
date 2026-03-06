@@ -1,0 +1,12 @@
+.git
+.github
+bin
+vendor
+docs
+*.md
+*.test
+*.out
+__debug_bin*
+log.txt
+.env
+.claude

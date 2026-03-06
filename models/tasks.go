@@ -43,22 +43,3 @@ type RecordingTask struct {
     StorageServerIP string `json:"storage_server_ip"`
     Trim            string `json:"trim"`
 }
-
-type FailedBillingTask struct {
-    RunID          string `json:"run_id"`
-    WorkspaceID    int    `json:"workspace_id"`
-    SubscriptionID int    `json:"subscription_id"`
-    CreatorID      int    `json:"creator_id"`
-    Reason         string `json:"reason"`
-}
-
-type PaymentReceiptTask struct {
-    RunID          string  `json:"run_id"`
-    WorkspaceID    int     `json:"workspace_id"`
-    SubscriptionID int     `json:"subscription_id"`
-    CreatorID      int     `json:"creator_id"`
-    CardLast4      string  `json:"card_last_4"`
-    CardBrand      string  `json:"card_brand"`
-    PaymentAmount  float64 `json:"payment_amount"`
-    Timestamp      int64   `json:"timestamp"`
-}

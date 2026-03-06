@@ -1,29 +1,27 @@
-# Dockerfile References: https://docs.docker.com/engine/reference/builder/
+# Build stage
+FROM golang:1.24.0 AS builder
 
-# Start from the latest golang base image
-FROM golang:1.24.0
-
-# Add Maintainer Info
-LABEL maintainer="Nadir Hamid <matrix.nad@gmail.com>"
-
-ENV RUN_AS=distributor
-
-# Set the Current Working Directory inside the container
 WORKDIR /app
 
-# Copy go mod and sum files
 COPY go.mod go.sum ./
-
-# Download all dependencies. Dependencies will be cached if the go.mod and go.sum files are not changed
 RUN go mod download
 
-# Copy the source from the current directory to the Working Directory inside the container
 COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o bin/distributor ./cmd/distributor/main.go && \
+    CGO_ENABLED=0 GOOS=linux go build -o bin/worker ./cmd/worker/main.go && \
+    CGO_ENABLED=0 GOOS=linux go build -o bin/cli ./cmd/cli/main.go
 
-# Build the Go app
-#RUN go build -o main .
-RUN make build
+# Runtime stage
+FROM alpine:3.20
 
-# Command to run the executable
+RUN apk add --no-cache bash ca-certificates
+
+WORKDIR /app
+
+COPY --from=builder /app/bin/ ./bin/
+COPY entrypoint.sh .
+RUN chmod +x entrypoint.sh
+
+ENV RUN_AS=distributor
 
 ENTRYPOINT ["./entrypoint.sh"]
