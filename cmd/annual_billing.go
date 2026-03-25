@@ -115,7 +115,7 @@ func (ab *AnnualBillingJob) AnnualBilling() error {
 			InvoiceDesc: invoiceDesc,
 		}
 
-		err = ab.paymentRepository.ChargeCustomer(billingParams, user, workspace, &invoice)
+		_, err = ab.paymentRepository.ChargeCustomer(billingParams, user, workspace, &invoice)
 		if err != nil {
 			helpers.Log(logrus.ErrorLevel, "error charging user..\r\n")
 			helpers.Log(logrus.ErrorLevel, err.Error())

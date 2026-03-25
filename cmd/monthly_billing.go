@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"time"
 
@@ -262,7 +261,7 @@ func (mb *MonthlyBillingJob) MonthlyBilling() error {
 
 		// try to charge the debit
 		if plan.PayAsYouGo {
-			remainingBalance := billingInfo.RemainingBalanceCents
+			remainingBalance := float64(billingInfo.RemainingBalanceCents)
 			minRemaining := remainingBalance - totalCosts
 			charge, err := utils.ComputeAmountToCharge(totalCosts, remainingBalance, minRemaining)
 			if err != nil {
@@ -313,7 +312,7 @@ func (mb *MonthlyBillingJob) MonthlyBilling() error {
 					Id:          int(invoiceId),
 					Cents:       cents,
 					InvoiceDesc: invoiceDesc}
-				err = mb.paymentRepository.ChargeCustomer(billingParams, user, workspace, &invoice)
+				_, err = mb.paymentRepository.ChargeCustomer(billingParams, user, workspace, &invoice)
 				if err != nil {
 					// could not charge card.
 					// update invoice record and mark as outstanding
@@ -350,7 +349,7 @@ func (mb *MonthlyBillingJob) MonthlyBilling() error {
 				Id:          int(invoiceId),
 				Cents:       cents,
 				InvoiceDesc: invoiceDesc}
-			err := mb.paymentRepository.ChargeCustomer(billingParams, user, workspace, &invoice)
+			_, err := mb.paymentRepository.ChargeCustomer(billingParams, user, workspace, &invoice)
 			if err != nil {
 				helpers.Log(logrus.ErrorLevel, "error charging user..\r\n")
 				helpers.Log(logrus.ErrorLevel, err.Error())
