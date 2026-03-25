@@ -260,7 +260,7 @@ func SendBackgroundEmails() error {
 				helpers.Log(logrus.ErrorLevel, err.Error())
 				continue
 			}
-			amount := math.Round(float64(balance) * percentOfTrigger)
+			amount := int64(math.Round(float64(balance) * percentOfTrigger))
 
 			if billingInfo.RemainingBalanceCents <= amount {
 				args := make(map[string]string)

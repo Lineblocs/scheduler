@@ -17,7 +17,7 @@ type Billing struct {
 
 // ChargeResult contains the details of a successful charge
 type ChargeResult struct {
-	PaymentIntentID  string
+	PaymentGatewayID  string
 	PaymentMethodID  string
 	Amount           int64
 	Currency         string

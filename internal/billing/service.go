@@ -606,8 +606,8 @@ func (s *BillingService) chargeWithCard(invoiceID int64, costs *BillingCosts, da
 	}
 
 	s.publishPaymentReceipt(task, int64(costs.TotalCosts), chargeResult.CardLast4, chargeResult.CardBrand, logger)
-
-	return s.markInvoiceChargeSuccess(invoiceID, int64(costs.TotalCosts), logger)
+	logger.Infof("Payment charged successfully for invoice %d with gateway ID %s", invoiceID, chargeResult.PaymentGatewayID)
+	return s.markInvoiceChargeSuccess(invoiceID, chargeResult.PaymentGatewayID, int64(costs.TotalCosts), logger)
 }
 
 func (s *BillingService) markInvoiceSuccess(invoiceID int64, totalCosts int64, now time.Time, logger *logrus.Entry) error {
@@ -661,21 +661,21 @@ func (s *BillingService) markInvoiceChargeIncomplete(invoiceID int64, logger *lo
 	return nil
 }
 
-func (s *BillingService) markInvoiceChargeSuccess(invoiceID int64, totalCosts int64, logger *logrus.Entry) error {
+func (s *BillingService) markInvoiceChargeSuccess(invoiceID int64, gatewayID string, totalCosts int64, logger *logrus.Entry) error {
 	confirmNumber, err := utils.CreateInvoiceConfirmationNumber()
 	if err != nil {
 		logger.WithError(err).Error("error generating confirmation number")
 		return err
 	}
-
-	finalStmt, err := s.db.Prepare("UPDATE users_invoices SET status = 'COMPLETE', source ='CARD', cents_collected = ?, confirmation_number = ? WHERE id = ?")
+	logger.Infof("Marking invoice %d as charged with gateway ID %s", invoiceID, gatewayID)
+	finalStmt, err := s.db.Prepare("UPDATE users_invoices SET status = 'COMPLETE', source ='CARD', cents_collected = ?, confirmation_number = ?, payment_gateway_id = ? WHERE id = ?")
+	defer finalStmt.Close()
 	if err != nil {
 		logger.WithError(err).Error("could not prepare update query")
 		return err
 	}
-	defer finalStmt.Close()
 
-	_, err = finalStmt.Exec(totalCosts, confirmNumber, invoiceID)
+	_, err = finalStmt.Exec(totalCosts, confirmNumber, gatewayID, invoiceID)
 	if err != nil {
 		logger.WithError(err).Error("error updating invoice")
 		return err

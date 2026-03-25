@@ -93,7 +93,7 @@ func (hndl *StripeBillingHandler) ChargeCustomer(user *helpers.User, workspace *
     helpers.Log(logrus.InfoLevel, fmt.Sprintf("Stripe PaymentIntent processed. ID: %s Status: %s", res.ID, res.Status))
 
     chargeResult := &ChargeResult{
-        PaymentIntentID: res.ID,
+        PaymentGatewayID: res.ID,
         PaymentMethodID: paymentMethodId,
         Amount:          amountCents,
         Currency:        string(stripe.CurrencyUSD),
