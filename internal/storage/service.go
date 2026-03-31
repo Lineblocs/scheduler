@@ -27,10 +27,10 @@ func NewRecordingService(db *sql.DB, ari *ari.Client, settings *models.Settings)
 }
 
 func (s *RecordingService) ProcessRecording(task models.RecordingTask) error {
-	fmt.Printf("Processing Recording ID: %d, StorageID: %d\n", task.ID, task.StorageID)
+	fmt.Printf("Processing Recording ID: %d, StorageID: %s\n", task.ID, task.StorageID)
 
 	// 1. Get File from ARI
-	src := ari.NewKey(ari.StoredRecordingKey, fmt.Sprintf("%d", task.StorageID))
+	src := ari.NewKey(ari.StoredRecordingKey, task.StorageID)
 	data, err := (*s.ariClient).StoredRecording().File(src)
 	if err != nil {
 		s.db.Exec("UPDATE recordings SET relocation_attempts = relocation_attempts + 1 WHERE id = ?", task.ID)

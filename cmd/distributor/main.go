@@ -269,8 +269,9 @@ func runRecordingsDistributor() {
 	}
 
 	// --- DATABASE QUERY ---
+	maxRelocationAttempts := 3
 	status := "completed"
-	recordingsResults, err := db.QueryContext(ctx, "SELECT id, status, storage_id, storage_server_ip, trim FROM recordings WHERE status = ?", status)
+	recordingsResults, err := db.QueryContext(ctx, "SELECT id, status, storage_id, storage_server_ip, trim FROM recordings WHERE status = ? AND relocation_attempts <= ?", status, maxRelocationAttempts)
 	if err != nil {
 		log.Printf("[RECORDINGS] DB Query Error: %v", err)
 		return

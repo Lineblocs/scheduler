@@ -86,6 +86,7 @@ type RecordingTask struct {
     StorageID       string `json:"storage_id"`
     StorageServerIP string `json:"storage_server_ip"`
     Trim            string `json:"trim"`
+    RelocationAttempts           int `json:"relocation_attempts"`
 }
 
 type FailedBillingTask struct {
