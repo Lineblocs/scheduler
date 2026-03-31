@@ -262,7 +262,7 @@ func runRecordingsDistributor() {
 	}
 	confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 1))
 
-	qRecordings, err := ch.QueueDeclare("recordings_tasks", true, false, false, false, nil)
+	qRecordings, err := ch.QueueDeclare("recording_tasks", true, false, false, false, nil)
 	if err != nil {
 		log.Printf("[RECORDINGS] RabbitMQ recordings queue declaration failed: %v", err)
 		return

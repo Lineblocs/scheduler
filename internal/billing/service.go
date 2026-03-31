@@ -170,14 +170,19 @@ func (s *BillingService) ProcessTask(task models.BillingTask) error {
 		WithField("action", task.Action)
 
 	var err error
+	customizations, err := helpers.GetCustomizationKVs()
+	if err != nil {
+		logger.WithError(err).Error("error getting customization KVs")
+		return err
+	}
 
 	// 1. Route based on Action (Immediate Signup/Upgrade vs. Regular Renewal)
 	if task.Action == "immediate" {
-		err = s.processImmediateProrated(task, logger)
+		err = s.processImmediateProrated(task, customizations, logger)
 	} else if task.BillingType == "ANNUAL" {
-		err = s.processAnnual(task, logger)
+		err = s.processAnnual(task, customizations, logger)
 	} else {
-		err = s.processMonthly(task, logger)
+		err = s.processMonthly(task, customizations, logger)
 	}
 
 	if err != nil {
@@ -191,8 +196,7 @@ func (s *BillingService) ProcessTask(task models.BillingTask) error {
 }
 
 // --- PRORATION & ANCHOR UPDATES ---
-
-func (s *BillingService) processImmediateProrated(task models.BillingTask, logger *logrus.Entry) error {
+func (s *BillingService) processImmediateProrated(task models.BillingTask, customizations *helpers.CustomizationSettingsKV, logger *logrus.Entry) error {
 	billingData, err := s.loadBillingData(task, task.BillingType, logger)
 	if err != nil {
 		return err
@@ -212,6 +216,7 @@ func (s *BillingService) processImmediateProrated(task models.BillingTask, logge
 
 	return s.chargeInvoice(invoiceID, costs, billingData, task, logger)
 }
+
 
 func (s *BillingService) updateSubscriptionAnchor(task models.BillingTask, logger *logrus.Entry) error {
 	var nextDate time.Time
@@ -240,11 +245,13 @@ func (s *BillingService) updateSubscriptionAnchor(task models.BillingTask, logge
 	return nil
 }
 
-func (s *BillingService) processMonthly(task models.BillingTask, logger *logrus.Entry) error {
+func (s *BillingService) processMonthly(task models.BillingTask, customizations *helpers.CustomizationSettingsKV, logger *logrus.Entry) error {
 	billingData, err := s.loadBillingData(task, "MONTHLY", logger)
 	if err != nil {
 		return err
 	}
+
+	//_ := (*customizations.Pairs["allow_billing_overage"]).(helpers.CustomizationBooleanValue).Value
 
 	costs, err := s.calculateMonthlyCosts(billingData, logger)
 	if err != nil {
@@ -684,7 +691,7 @@ func (s *BillingService) markInvoiceChargeSuccess(invoiceID int64, gatewayID str
 	return nil
 }
 
-func (s *BillingService) processAnnual(task models.BillingTask, logger *logrus.Entry) error {
+func (s *BillingService) processAnnual(task models.BillingTask, customizations *helpers.CustomizationSettingsKV, logger *logrus.Entry) error {
 	conn := utils.NewDBConn(s.db)
 
 	billingParams, err := conn.GetBillingParams()

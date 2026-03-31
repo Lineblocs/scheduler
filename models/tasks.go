@@ -7,7 +7,51 @@ const (
     ActionImmediate = "immediate_prorated" // Charge now for mid-month signup/upgrade
     ActionRenewal   = "renewal"            // Standard global cycle charge (e.g. on the 1st)
     ActionUpgrade   = "upgrade"            // Scheduled plan changes
+tionUpgrade   = "upgrade"            // Scheduled plan changes
 )
+
+type InvoiceLineItem struct {
+    KeyName     string `json:"key_name"`
+    Name        string `json:"name"`
+    Cents       int    `json:"cents"`
+    IsRecurring bool   `json:"is_recurring"`
+}
+
+type MonthlyInvoiceTask struct {
+    RunID               string            `json:"run_id"`
+    WorkspaceID         int               `json:"workspace_id"`
+    CreatorID           int               `json:"creator_id"`
+    InvoiceNo           string            `json:"invoice_no"`
+    DueDate             time.Time         `json:"due_date"`
+    Cents               int               `json:"cents"`
+    CentsIncludingTaxes int               `json:"cents_including_taxes"`
+    CentsTaxes          int               `json:"cents_taxes"`
+    TaxMetadata         map[string]string `json:"tax_metadata"`
+    CallCosts           int               `json:"call_costs"`
+    RecordingCosts      int               `json:"recording_costs"`
+    FaxCosts            int               `json:"fax_costs"`
+    MembershipCosts     int               `json:"membership_costs"`
+    NumberCosts         int               `json:"number_costs"`
+    LineItems           []InvoiceLineItem `json:"line_items"`
+}
+
+type AnnualInvoiceTask struct {
+    RunID               string            `json:"run_id"`
+    WorkspaceID         int               `json:"workspace_id"`
+    CreatorID           int               `json:"creator_id"`
+    InvoiceNo           string            `json:"invoice_no"`
+    DueDate             time.Time         `json:"due_date"`
+    Cents               int               `json:"cents"`
+    CentsIncludingTaxes int               `json:"cents_including_taxes"`
+    CentsTaxes          int               `json:"cents_taxes"`
+    TaxMetadata         map[string]string `json:"tax_metadata"`
+    CallCosts           int               `json:"call_costs"`
+    RecordingCosts      int               `json:"recording_costs"`
+    FaxCosts            int               `json:"fax_costs"`
+    MembershipCosts     int               `json:"membership_costs"`
+    NumberCosts         int               `json:"number_costs"`
+    LineItems           []InvoiceLineItem `json:"line_items"`
+}
 
 // Billing Cycle Types
 const (
