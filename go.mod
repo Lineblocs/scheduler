@@ -5,7 +5,7 @@ go 1.24.0
 require (
 	github.com/CyCoreSystems/ari/v5 v5.3.1
 	github.com/DATA-DOG/go-sqlmock v1.5.2
-	github.com/Lineblocs/go-helpers v0.0.4-0.20260220211431-df7c3b6bd492
+	github.com/Lineblocs/go-helpers v0.0.4-0.20260331235600-eab9fa8bd14a
 	github.com/aws/aws-sdk-go v1.55.8
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/joho/godotenv v1.5.1

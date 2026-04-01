@@ -341,11 +341,12 @@ func (s *BillingService) loadBillingData(task models.BillingTask, billingType st
 }
 
 func (s *BillingService) calculateMonthlyCosts(data *BillingData, logger *logrus.Entry) (*BillingCosts, error) {
+
 	costs := &BillingCosts{}
 	userCount := utils.GetWorkspaceUserCount(s.db, data.Workspace.Id)
 	logger.Infof("Workspace total user count %d", userCount)
 
-	costs.MembershipCosts = int64(data.Plan.BaseCosts * float64(userCount))
+	costs.MembershipCosts = int64(data.Plan.MonthlyCostCents * userCount)
 	logger.Infof("Workspace total membership costs is %d", costs.MembershipCosts)
 
 	utils.CreateMonthlyNumberRentalDebit(s.db, data.Workspace.Id, data.User.Id, data.BillingPeriodStart)
@@ -372,6 +373,29 @@ func (s *BillingService) calculateMonthlyCosts(data *BillingData, logger *logrus
 	costs.InvoiceDesc = fmt.Sprintf("LineBlocs invoice for %s", data.BillingInfo.InvoiceDue)
 
 	logger.Infof("Final costs are membership: %d, call tolls: %d, recordings: %d, fax: %d, did rentals: %d, total: %d (cents)",
+		costs.MembershipCosts, costs.CallTollsCosts, costs.RecordingCosts, costs.FaxCosts, costs.NumberRentalCosts, costs.TotalCosts)
+
+	return costs, nil
+}
+
+func (s *BillingService) calculateAnnualCosts(data *BillingData, logger *logrus.Entry) (*BillingCosts, error) {
+	costs := &BillingCosts{}
+	userCount := utils.GetWorkspaceUserCount(s.db, data.Workspace.Id)
+	logger.Infof("Workspace total user count %d", userCount)
+
+	costs.MembershipCosts = int64(data.Plan.AnnualCostCents * userCount)
+	logger.Infof("Workspace total annual membership costs is %d", costs.MembershipCosts)
+	// Annual billing does not charge for number rentals
+
+	costs.CallTollsCosts = 0
+	costs.RecordingCosts = 0
+	costs.FaxCosts = 0
+	costs.NumberRentalCosts = 0
+
+	costs.TotalCosts = costs.MembershipCosts + costs.CallTollsCosts + costs.RecordingCosts + costs.FaxCosts + costs.NumberRentalCosts
+	costs.InvoiceDesc = fmt.Sprintf("LineBlocs annual invoice for %s", data.BillingInfo.InvoiceDue)
+
+	logger.Infof("Final annual costs are membership: %d, call tolls: %d, recordings: %d, fax: %d, did rentals: %d, total: %d (cents)",
 		costs.MembershipCosts, costs.CallTollsCosts, costs.RecordingCosts, costs.FaxCosts, costs.NumberRentalCosts, costs.TotalCosts)
 
 	return costs, nil
@@ -539,6 +563,44 @@ func (s *BillingService) createInvoice(costs *BillingCosts, data *BillingData, l
 		logger.WithError(err).Error("could not get insert id")
 		return 0, err
 	}
+	logger.Infof("Creating invoice line items for invoice %d", invoiceID)
+
+	lineItems := []struct {
+		name   string
+		cents  float64
+		keyName string
+	}{
+		{"Call Tolls", float64(costs.CallTollsCosts), "call_tolls"},
+		{"Recording Storage", float64(costs.RecordingCosts), "recording_storage"},
+		{"Fax Services", float64(costs.FaxCosts), "fax_services"},
+		{"DID Rental", float64(costs.NumberRentalCosts), "did_rental"},
+		{"Membership", float64(costs.MembershipCosts), "membership"},
+	}
+
+	lineItemStmt, err := s.db.Prepare("INSERT INTO users_invoices_line_items (`name`, `cents`, `invoice_id`, `key_name`, `is_recurring`, `created_at`, `updated_at`) VALUES (?, ?, ?, ?, ?, ?, ?)")
+	if err != nil {
+		logger.WithError(err).Error("could not prepare line items insert query")
+		return 0, err
+	}
+	defer lineItemStmt.Close()
+
+	recurringItems := []string{"did_rental", "membership"}
+	for _, item := range lineItems {
+		isRecurring := 0
+		for _, recurringItem := range recurringItems {
+			if item.keyName == recurringItem {
+				isRecurring = 1
+				break
+			}
+		}
+		_, err := lineItemStmt.Exec(item.name, item.cents, invoiceID, item.keyName, isRecurring, data.Now, data.Now)
+		if err != nil {
+			logger.WithError(err).Error("error creating invoice line item", "key_name", item.keyName)
+			return 0, err
+		}
+	}
+
+	logger.Infof("Successfully created %d line items for invoice %d", len(lineItems), invoiceID)
 
 	return invoiceID, nil
 }
@@ -692,342 +754,22 @@ func (s *BillingService) markInvoiceChargeSuccess(invoiceID int64, gatewayID str
 }
 
 func (s *BillingService) processAnnual(task models.BillingTask, customizations *helpers.CustomizationSettingsKV, logger *logrus.Entry) error {
-	conn := utils.NewDBConn(s.db)
-
-	billingParams, err := conn.GetBillingParams()
+	billingData, err := s.loadBillingData(task, "ANNUAL", logger)
 	if err != nil {
-		logger.WithError(err).Error("error getting billing params")
 		return err
 	}
 
-	now := time.Now()
-	billingPeriodStart := now.AddDate(-1, 0, 0)
-	billingPeriodEnd := now
-	billingPeriodStartStr := billingPeriodStart.Format(time.DateTime)
-	billingPeriodEndStr := billingPeriodEnd.Format(time.DateTime)
+	//_ := (*customizations.Pairs["allow_billing_overage"]).(helpers.CustomizationBooleanValue).Value
 
-	workspace, err := s.workspaceRepository.GetWorkspaceFromDB(task.WorkspaceID)
+	costs, err := s.calculateAnnualCosts(billingData, logger)
 	if err != nil {
-		logger.WithError(err).Error("error getting workspace")
 		return err
 	}
 
-	user, err := s.workspaceRepository.GetUserFromDB(task.CreatorID)
+	invoiceID, err := s.createInvoice(costs, billingData, logger)
 	if err != nil {
-		logger.WithError(err).Error("error getting user")
 		return err
 	}
 
-	plans, err := s.paymentRepository.GetServicePlans()
-	if err != nil {
-		logger.WithError(err).Error("error getting service plans")
-		return err
-	}
-
-	subscription, err := s.paymentRepository.GetSubscription(task.SubscriptionID)
-	if err != nil {
-		logger.WithError(err).Error("error getting user")
-		return err
-	}
-
-	plan := utils.GetPlanBySubscription(plans, subscription)
-	if plan == nil {
-		logger.Error("plan is nil")
-		return fmt.Errorf("plan not found for subscription")
-	}
-
-	billingInfo, err := s.workspaceRepository.GetWorkspaceBillingInfo(workspace)
-	if err != nil {
-		logger.WithError(err).Error("error getting billing info")
-		return err
-	}
-
-	baseCosts, err := helpers.GetBaseCosts()
-	if err != nil {
-		logger.WithError(err).Error("error getting base costs")
-		return err
-	}
-
-	userCount := utils.GetWorkspaceUserCount(s.db, workspace.Id)
-	logger.Infof("Workspace total user count %d", userCount)
-
-	totalCosts := int64(0)
-	annualMembershipCosts := int64(plan.BaseCosts * float64(userCount) * 12.0)
-	callTollsCosts := int64(0)
-	recordingCosts := int64(0)
-	faxCosts := int64(0)
-	numberRentalCosts := int64(0)
-	invoiceDesc := fmt.Sprintf("LineBlocs annual invoice for %s", billingInfo.InvoiceDue)
-
-	logger.Infof("Workspace total annual membership costs is %d", annualMembershipCosts)
-
-	debitsRows, err := s.db.Query(
-		"SELECT id, source, module_id, cents, created_at FROM users_debits WHERE user_id = ? AND created_at BETWEEN ? AND ?",
-		workspace.CreatorId, billingPeriodStartStr, billingPeriodEndStr,
-	)
-	if err != nil {
-		logger.WithError(err).Error("error running debits query")
-		return err
-	}
-	defer debitsRows.Close()
-
-    var debitID int
-    var debitSource string
-    var debitModuleID int
-    var debitCostCents int64
-    var debitCreatedAt time.Time
-
-    remainingAnnualMinutes := plan.MinutesPerMonth * 12
-    remainingAnnualRecordings := plan.RecordingSpace * 12
-    remainingAnnualFaxUnits := plan.Fax * 12
-
-    for debitsRows.Next() {
-        if err := debitsRows.Scan(&debitID, &debitSource, &debitModuleID, &debitCostCents, &debitCreatedAt); err != nil {
-            logger.WithError(err).Error("error scanning debit row")
-            continue
-        }
-
-        switch debitSource {
-        case "CALL":
-            call, err := s.workspaceRepository.GetCallFromDB(debitModuleID)
-            if err != nil {
-                logger.WithError(err).Error("error getting call")
-                continue
-            }
-
-            callDurationMinutes := float64(call.DurationNumber) / 60.0
-            charge, err := utils.ComputeAmountToCharge(float64(debitCostCents), remainingAnnualMinutes, callDurationMinutes)
-            if err != nil {
-                logger.WithError(err).Error("error computing call charge")
-                continue
-            }
-
-            callTollsCosts += int64(charge)
-            remainingAnnualMinutes -= callDurationMinutes
-
-        case "NUMBER_RENTAL":
-            did, err := s.workspaceRepository.GetDIDFromDB(debitModuleID)
-            if err != nil {
-                logger.WithError(err).Error("error getting DID")
-                continue
-            }
-            numberRentalCosts += int64(did.MonthlyCost)
-        }
-    }
-
-	recordingsRows, err := s.db.Query(
-		"SELECT id, size, created_at FROM recordings WHERE user_id = ? AND created_at BETWEEN ? AND ?",
-		workspace.CreatorId, billingPeriodStartStr, billingPeriodEndStr,
-	)
-	if err != sql.ErrNoRows && err != nil {
-		logger.WithError(err).Error("error running recordings query")
-		return err
-	}
-	defer recordingsRows.Close()
-
-    var recordingID int
-    var recordingSizeBytes float64
-    var recordingCreatedAt time.Time
-
-    for recordingsRows.Next() {
-        if err := recordingsRows.Scan(&recordingID, &recordingSizeBytes, &recordingCreatedAt); err != nil {
-            logger.WithError(err).Error("error scanning recording row")
-            continue
-        }
-
-        recordingCentsPerByte := int64(math.Round(baseCosts.RecordingsPerByte * recordingSizeBytes))
-        charge, err := utils.ComputeAmountToCharge(float64(recordingCentsPerByte), remainingAnnualRecordings, recordingSizeBytes)
-        if err != nil {
-            logger.WithError(err).Error("error calculating recording charge")
-            continue
-        }
-
-        recordingCosts += int64(charge)
-        remainingAnnualRecordings -= recordingSizeBytes
-    }
-
-	faxesRows, err := s.db.Query(
-		"SELECT id, created_at FROM faxes WHERE workspace_id = ? AND created_at BETWEEN ? AND ?",
-		workspace.Id, billingPeriodStartStr, billingPeriodEndStr,
-	)
-	if err != sql.ErrNoRows && err != nil {
-		logger.WithError(err).Error("error running faxes query")
-		return err
-	}
-	defer faxesRows.Close()
-
-    var faxID int
-    var faxCreatedAt time.Time
-
-    for faxesRows.Next() {
-        if err := faxesRows.Scan(&faxID, &faxCreatedAt); err != nil {
-            logger.WithError(err).Error("error scanning fax row")
-            continue
-        }
-
-        faxCentsPerUnit := baseCosts.FaxPerUsed
-        charge, err := utils.ComputeAmountToCharge(faxCentsPerUnit, float64(remainingAnnualFaxUnits), float64(plan.Fax*12))
-        if err != nil {
-            logger.WithError(err).Error("error calculating fax charge")
-            continue
-        }
-
-        faxCosts += int64(charge)
-        remainingAnnualFaxUnits--
-    }
-
-    totalCosts = annualMembershipCosts + callTollsCosts + recordingCosts + faxCosts + numberRentalCosts
-
-    logger.Infof(
-        "Final annual costs are membership: %d, call tolls: %d, recordings: %d, fax: %d, did rentals: %d, total: %d (cents)",
-        annualMembershipCosts, callTollsCosts, recordingCosts, faxCosts, numberRentalCosts, totalCosts,
-    )
-
-    annualCosts := &BillingCosts{
-        MembershipCosts:   annualMembershipCosts,
-        CallTollsCosts:    callTollsCosts,
-        RecordingCosts:    recordingCosts,
-        FaxCosts:          faxCosts,
-        NumberRentalCosts: numberRentalCosts,
-        TotalCosts:        totalCosts,
-        InvoiceDesc:       invoiceDesc,
-    }
-
-    annualBillingData := &BillingData{
-        Workspace:         workspace,
-        User:              user,
-        BillingInfo:       billingInfo,
-        Now:               now,
-    }
-
-    invoiceID, err := s.createInvoice(annualCosts, annualBillingData, logger)
-    if err != nil {
-        return err
-    }
-
-    if plan.PayAsYouGo {
-        remainingBalance := billingInfo.RemainingBalanceCents
-        balanceAfterCharge := remainingBalance - int64(totalCosts)
-        chargeAmount, err := utils.ComputeAmountToCharge(float64(totalCosts), float64(remainingBalance), float64(balanceAfterCharge))
-        if err != nil {
-            logger.WithError(err).Error("error calculating charge amount")
-            return err
-        }
-
-        if remainingBalance >= int64(totalCosts) {
-            confNumber, err := utils.CreateInvoiceConfirmationNumber()
-            if err != nil {
-                logger.WithError(err).Error("error generating confirmation number")
-                return err
-            }
-
-            updateStmt, err := s.db.Prepare("UPDATE users_invoices SET status = 'COMPLETE', source ='CREDITS', cents_collected = ?, confirmation_number = ? WHERE id = ?")
-            if err != nil {
-                logger.WithError(err).Error("could not prepare update query")
-                return err
-            }
-            defer updateStmt.Close()
-            _, err = updateStmt.Exec(int64(totalCosts), confNumber, invoiceID)
-            if err != nil {
-                logger.WithError(err).Error("error updating invoice")
-                return err
-            }
-        } else {
-            updateStmt, err := s.db.Prepare("UPDATE users_invoices SET status = 'INCOMPLETE', source ='CREDITS', cents_collected = ? WHERE id = ?")
-            if err != nil {
-                logger.WithError(err).Error("could not prepare update query")
-                return err
-            }
-            defer updateStmt.Close()
-            _, err = updateStmt.Exec(int64(chargeAmount), invoiceID)
-            if err != nil {
-                logger.WithError(err).Error("error updating invoice")
-                return err
-            }
-
-            cardChargeAmount := int(math.Ceil(chargeAmount))
-            invoice := models.UserInvoice{
-                Id:          int(invoiceID),
-                Cents:       cardChargeAmount,
-                InvoiceDesc: invoiceDesc,
-            }
-
-            chargeResult, err := s.paymentRepository.ChargeCustomer(billingParams, user, workspace, &invoice)
-            if err != nil {
-                logger.WithError(err).Error("error charging customer card")
-                failStmt, err := s.db.Prepare("UPDATE users_invoices SET source = 'CARD', status = 'INCOMPLETE', num_attempts = 1, last_attempted = ? WHERE id = ?")
-                if err != nil {
-                    logger.WithError(err).Error("could not prepare update query")
-                    return err
-                }
-                defer failStmt.Close()
-                _, err = failStmt.Exec(now, invoiceID)
-                if err != nil {
-                    logger.WithError(err).Error("error updating invoice")
-                    return err
-                }
-                return err
-            }
-
-            s.publishPaymentReceipt(task, int64(totalCosts), chargeResult.CardLast4, chargeResult.CardBrand, logger)
-
-            successStmt, err := s.db.Prepare("UPDATE users_invoices SET status = 'COMPLETE', source ='CARD', cents_collected = ?, last_attempted = ?, num_attempts = 1 WHERE id = ?")
-            if err != nil {
-                logger.WithError(err).Error("could not prepare update query")
-                return err
-            }
-            defer successStmt.Close()
-            _, err = successStmt.Exec(int64(totalCosts), now, invoiceID)
-            if err != nil {
-                logger.WithError(err).Error("error updating invoice")
-                return err
-            }
-        }
-    } else {
-        cardChargeAmount := int(math.Ceil(float64(totalCosts)))
-        invoice := models.UserInvoice{
-            Id:          int(invoiceID),
-            Cents:       cardChargeAmount,
-            InvoiceDesc: invoiceDesc,
-        }
-
-        chargeResult, err := s.paymentRepository.ChargeCustomer(billingParams, user, workspace, &invoice)
-        if err != nil {
-            logger.WithError(err).Error("error charging user")
-            updateStmt, err := s.db.Prepare("UPDATE users_invoices SET status = 'INCOMPLETE', source = 'CARD', cents_collected = 0 WHERE id = ?")
-            if err != nil {
-                logger.WithError(err).Error("could not prepare update query")
-                return err
-            }
-            defer updateStmt.Close()
-            _, err = updateStmt.Exec(invoiceID)
-            if err != nil {
-                logger.WithError(err).Error("error updating invoice")
-                return err
-            }
-            return err
-        }
-
-        s.publishPaymentReceipt(task, int64(totalCosts), chargeResult.CardLast4, chargeResult.CardBrand, logger)
-
-        confirmNumber, err := utils.CreateInvoiceConfirmationNumber()
-        if err != nil {
-            logger.WithError(err).Error("error generating confirmation number")
-            return err
-        }
-
-        finalStmt, err := s.db.Prepare("UPDATE users_invoices SET status = 'COMPLETE', source ='CARD', cents_collected = ?, confirmation_number = ? WHERE id = ?")
-        if err != nil {
-            logger.WithError(err).Error("could not prepare update query")
-            return err
-        }
-        defer finalStmt.Close()
-        _, err = finalStmt.Exec(int64(totalCosts), confirmNumber, invoiceID)
-        if err != nil {
-            logger.WithError(err).Error("error updating invoice")
-            return err
-        }
-    }
-
-    return nil
+	return s.chargeInvoice(invoiceID, costs, billingData, task, logger)
 }
