@@ -402,7 +402,7 @@ func (s *BillingService) calculateAnnualCosts(data *BillingData, logger *logrus.
 }
 
 func (s *BillingService) processDebits(data *BillingData, costs *BillingCosts, startStr, endStr string, logger *logrus.Entry) error {
-	rows, err := s.db.Query("SELECT id, source, module_id, cents, created_at FROM users_debits WHERE workspace_id = ? AND created_at BETWEEN ? AND ?", data.Workspace.Id, startStr, endStr)
+	rows, err := s.db.Query("SELECT id, source, module_id, cents, created_at FROM users_debits WHERE workspace_id = ? AND created_at BETWEEN DATE(?) AND DATE(?)", data.Workspace.Id, startStr, endStr)
 	if err != nil {
 		logger.WithError(err).Error("error running debits query")
 		return err
