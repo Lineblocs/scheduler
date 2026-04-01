@@ -345,9 +345,9 @@ func (s *BillingService) calculateMonthlyCosts(data *BillingData, logger *logrus
 	costs := &BillingCosts{}
 	userCount := utils.GetWorkspaceUserCount(s.db, data.Workspace.Id)
 	logger.Infof("Workspace total user count %d", userCount)
-
 	costs.MembershipCosts = int64(data.Plan.MonthlyCostCents * userCount)
-	logger.Infof("Workspace total membership costs is %d", costs.MembershipCosts)
+	logger.Infof("Plan monthly cost per user: %d cents", data.Plan.MonthlyCostCents)
+	logger.Infof("Workspace total membership costs is %d cents ($%.2f)", costs.MembershipCosts, float64(costs.MembershipCosts)/100.0)
 
 	utils.CreateMonthlyNumberRentalDebit(s.db, data.Workspace.Id, data.User.Id, data.BillingPeriodStart)
 
@@ -372,6 +372,7 @@ func (s *BillingService) calculateMonthlyCosts(data *BillingData, logger *logrus
 	costs.TotalCosts = costs.MembershipCosts + costs.CallTollsCosts + costs.RecordingCosts + costs.FaxCosts + costs.NumberRentalCosts
 	costs.InvoiceDesc = fmt.Sprintf("LineBlocs invoice for %s", data.BillingInfo.InvoiceDue)
 
+	logger.Infof("Final monthly costs total in dollars: %.2f", float64(costs.TotalCosts)/100.0)
 	logger.Infof("Final costs are membership: %d, call tolls: %d, recordings: %d, fax: %d, did rentals: %d, total: %d (cents)",
 		costs.MembershipCosts, costs.CallTollsCosts, costs.RecordingCosts, costs.FaxCosts, costs.NumberRentalCosts, costs.TotalCosts)
 
@@ -384,7 +385,8 @@ func (s *BillingService) calculateAnnualCosts(data *BillingData, logger *logrus.
 	logger.Infof("Workspace total user count %d", userCount)
 
 	costs.MembershipCosts = int64(data.Plan.AnnualCostCents * userCount)
-	logger.Infof("Workspace total annual membership costs is %d", costs.MembershipCosts)
+	logger.Infof("Plan annual cost per user: %d cents", data.Plan.AnnualCostCents)
+	logger.Infof("Workspace total annual membership costs is %d cents ($%.2f)", costs.MembershipCosts, float64(costs.MembershipCosts)/100.0)
 	// Annual billing does not charge for number rentals
 
 	costs.CallTollsCosts = 0
@@ -395,9 +397,8 @@ func (s *BillingService) calculateAnnualCosts(data *BillingData, logger *logrus.
 	costs.TotalCosts = costs.MembershipCosts + costs.CallTollsCosts + costs.RecordingCosts + costs.FaxCosts + costs.NumberRentalCosts
 	costs.InvoiceDesc = fmt.Sprintf("LineBlocs annual invoice for %s", data.BillingInfo.InvoiceDue)
 
-	logger.Infof("Final annual costs are membership: %d, call tolls: %d, recordings: %d, fax: %d, did rentals: %d, total: %d (cents)",
-		costs.MembershipCosts, costs.CallTollsCosts, costs.RecordingCosts, costs.FaxCosts, costs.NumberRentalCosts, costs.TotalCosts)
-
+	logger.Infof("Final annual costs are membership: %d, call tolls: %d, recordings: %d, fax: %d, did rentals: %d, total: %d (cents)", costs.MembershipCosts, costs.CallTollsCosts, costs.RecordingCosts, costs.FaxCosts, costs.NumberRentalCosts, costs.TotalCosts)
+	logger.Infof("Final annual costs total in dollars: %.2f", float64(costs.TotalCosts)/100.0)	
 	return costs, nil
 }
 
@@ -442,7 +443,7 @@ func (s *BillingService) processCallDebit(data *BillingData, costs *BillingCosts
 	}
 
 	callDurationMinutes := float64(call.DurationNumber / 60)
-	logger.Infof("processing call with duration %d seconds", call.DurationNumber)
+	logger.Infof("processing call from %s to %s, direction %s, duration %d seconds", call.From, call.To, call.Direction, call.DurationNumber)
 
 	charge, err := utils.ComputeAmountToCharge(float64(costCents), *remainingMinutes, callDurationMinutes)
 	if err != nil {
@@ -461,7 +462,7 @@ func (s *BillingService) processNumberRentalDebit(data *BillingData, costs *Bill
 		return
 	}
 
-	logger.Infof("processing DID rental with monthly cost %d", did.MonthlyCost)
+	logger.Infof("processing DID rental with monthly cost %d cents for DID number %s", did.MonthlyCost, did.Number)
 	costs.NumberRentalCosts += int64(did.MonthlyCost)
 }
 

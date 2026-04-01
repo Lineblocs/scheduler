@@ -74,7 +74,8 @@ func main() {
 		err := billingSvc.ProcessTask(task)
 		if err != nil {
 			log.Printf("Error processing workspace %d: %v", task.WorkspaceID, err)
-			d.Nack(false, true) // Requeue for retry
+			//d.Nack(false, true) // Requeue for retry
+			d.Ack(false)
 		} else {
 			d.Ack(false)
 		}
