@@ -229,21 +229,42 @@ func ComputeAmountToCharge(fullCentsToCharge float64, availMinutes float64, minu
     return 0, fmt.Errorf("billing error: computeAmountToCharge logic failure")
 }
 
-func CreateMonthlyNumberRentalDebit(db *sql.DB, workspaceId int, userId int, start time.Time) (int, int) {
+func CreateMonthlyNumberRentalDebit(db *sql.DB, workspaceId int, userId int, start time.Time) error {
     var didId int
     var monthlyCosts int
     results1, err := db.Query("SELECT id, monthly_cost FROM did_numbers WHERE workspace_id = ?", workspaceId)
     if err != nil {
-        return 0, 0
+        return err
     }
     defer results1.Close()
     for results1.Next() {
-        results1.Scan(&didId, &monthlyCosts)
-        stmt, _ := db.Prepare("INSERT INTO users_debits (`source`, `status`, `cents`, `module_id`, `user_id`, `workspace_id`, `created_at`) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        err = results1.Scan(&didId, &monthlyCosts)
+        if err != nil {
+            return err
+        }
+        deduplicationKey := GenerateDeduplicationKey("NUMBER_RENTAL", start.Year(), int(start.Month()), start.Day(), workspaceId, didId)
+        var count int
+        err = db.QueryRow("SELECT COUNT(*) FROM users_debits WHERE deduplication_key = ?", deduplicationKey).Scan(&count)
+        if err != nil {
+            return err
+        }
+        if count > 0 {
+            helpers.Log(logrus.InfoLevel, fmt.Sprintf("Deduplication key %s already exists, skipping debit creation.", deduplicationKey))
+            continue
+        }
+
+        stmt, err := db.Prepare("INSERT INTO users_debits (`source`, `status`, `cents`, `module_id`, `user_id`, `workspace_id`, `created_at`) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        if err != nil {
+            return err
+        }
         defer stmt.Close()
-        _, _ = stmt.Exec("NUMBER_RENTAL", "INCOMPLETE", monthlyCosts, didId, userId, workspaceId, start)
+        _, err = stmt.Exec("NUMBER_RENTAL", "INCOMPLETE", monthlyCosts, didId, userId, workspaceId, start)
+        if err != nil {
+            return err
+        }
     }
-    return didId, monthlyCosts
+
+    return nil
 }
 
 func GetWorkspaceUserCount(db *sql.DB, workspaceId int) int {
@@ -302,4 +323,19 @@ func CalculateInitialCharge(price float64, billingType string) (float64, time.Ti
     
     // Standard rounding for currency
     return math.Round(amount*100) / 100, nextAnchor
+}
+
+
+func GenerateDeduplicationKey(source string, year int, month int, day int, workspaceId int, didId int) string {
+    return fmt.Sprintf("%s_%d_%d_%d_%d_%d", source, year, month, day, workspaceId, didId)
+}
+
+func CheckDeduplicationKey(db *sql.DB, key string) int {
+    var count int
+    err := db.QueryRow("SELECT COUNT(*) FROM billing_deduplication WHERE `key` = ?", key).Scan(&count)
+    if err != nil {
+        return 0
+    }
+
+    return count
 }

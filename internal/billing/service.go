@@ -349,7 +349,11 @@ func (s *BillingService) calculateMonthlyCosts(data *BillingData, logger *logrus
 	logger.Infof("Plan monthly cost per user: %d cents", data.Plan.MonthlyCostCents)
 	logger.Infof("Workspace total membership costs is %d cents ($%.2f)", costs.MembershipCosts, float64(costs.MembershipCosts)/100.0)
 
-	utils.CreateMonthlyNumberRentalDebit(s.db, data.Workspace.Id, data.User.Id, data.BillingPeriodStart)
+	err := utils.CreateMonthlyNumberRentalDebit(s.db, data.Workspace.Id, data.User.Id, data.BillingPeriodStart)
+	if err != nil {
+		logger.WithError(err).Error("error creating monthly number rental debit")
+		return nil, err
+	}
 
 	billingPeriodStartStr := data.BillingPeriodStart.Format(time.DateTime)
 	billingPeriodEndStr := data.BillingPeriodEnd.Format(time.DateTime)
@@ -536,6 +540,16 @@ func (s *BillingService) processFaxes(data *BillingData, costs *BillingCosts, st
 
 func (s *BillingService) createInvoice(costs *BillingCosts, data *BillingData, logger *logrus.Entry) (int64, error) {
 	logger.Infof("Creating invoice for user %d, on workspace %d, plan type %s", data.User.Id, data.Workspace.Id, data.Workspace.Plan)
+	deduplicationKey := utils.GenerateDeduplicationKey("INVOICE", data.BillingPeriodStart.Year(), int(data.BillingPeriodStart.Month()), data.BillingPeriodStart.Day(), data.Workspace.Id, 0)
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM users_invoices WHERE deduplication_key = ?", deduplicationKey).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	if count > 0 {
+		logger.Infof("Deduplication key %s already exists, skipping invoice creation.", deduplicationKey)
+		return 0, fmt.Errorf("duplicate invoice creation attempt")
+	}
 
 	insertStmt, err := s.db.Prepare("INSERT INTO users_invoices (`cents`, `cents_including_taxes`, `call_costs`, `recording_costs`, `fax_costs`, `membership_costs`, `number_costs`, `status`, `user_id`, `workspace_id`, `created_at`, `updated_at`, `source`, `tax_metadata`) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
@@ -659,7 +673,6 @@ func (s *BillingService) chargeWithCard(invoiceID int64, costs *BillingCosts, da
 	logger.Info("Charging recurringly with card")
 
 	cardChargeAmount := int(math.Ceil(float64(costs.TotalCosts)))
-	cardChargeAmount = 200
 	logger.Info(fmt.Sprintf("Total costs to charge on card is %d cents", cardChargeAmount))
 
 	invoice := models.UserInvoice{

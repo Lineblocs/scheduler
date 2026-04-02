@@ -37,6 +37,12 @@ func main() {
 		log.Fatalf("Critical: Could not connect to Redis: %v", err)
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "run_debug_crontab" {
+		log.Println("[DEBUG] Running manual CLI trigger...")
+		runBillingDistributor("MONTHLY_DEBUG")
+		os.Exit(0)
+	}
+
 	// 2. SETUP SCHEDULER
 	c := cron.New()
 
