@@ -242,7 +242,7 @@ func CreateMonthlyNumberRentalDebit(db *sql.DB, workspaceId int, userId int, sta
         if err != nil {
             return err
         }
-        deduplicationKey := GenerateDeduplicationKey("NUMBER_RENTAL", start.Year(), int(start.Month()), start.Day(), workspaceId, didId)
+        deduplicationKey := helpers.GenerateDeduplicationKey("NUMBER_RENTAL", start.Year(), int(start.Month()), start.Day(), workspaceId, didId)
         var count int
         err = db.QueryRow("SELECT COUNT(*) FROM users_debits WHERE deduplication_key = ?", deduplicationKey).Scan(&count)
         if err != nil {
@@ -323,13 +323,6 @@ func CalculateInitialCharge(price float64, billingType string) (float64, time.Ti
     
     // Standard rounding for currency
     return math.Round(amount*100) / 100, nextAnchor
-}
-
-
-func GenerateDeduplicationKey(source string, year int, month int, day int, workspaceId int, didId int) string {
-    key := fmt.Sprintf("%s_%d_%d_%d_%d_%d", source, year, month, day, workspaceId, didId)
-    helpers.Log(logrus.InfoLevel, fmt.Sprintf("Generated deduplication key: %s", key))
-    return key
 }
 
 func CheckDeduplicationKey(db *sql.DB, key string) int {
