@@ -252,13 +252,13 @@ func CreateMonthlyNumberRentalDebit(db *sql.DB, workspaceId int, userId int, sta
             helpers.Log(logrus.InfoLevel, fmt.Sprintf("Deduplication key %s already exists, skipping debit creation.", deduplicationKey))
             continue
         }
-
-        stmt, err := db.Prepare("INSERT INTO users_debits (`source`, `status`, `cents`, `module_id`, `user_id`, `workspace_id`, `created_at`) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        helpers.Log(logrus.InfoLevel, fmt.Sprintf("Creating debit for number rental (DID ID: %d) for workspace %d", didId, workspaceId))
+        stmt, err := db.Prepare("INSERT INTO users_debits (`source`, `status`, `cents`, `module_id`, `user_id`, `workspace_id`, `created_at`, `deduplication_key`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
         if err != nil {
             return err
         }
         defer stmt.Close()
-        _, err = stmt.Exec("NUMBER_RENTAL", "INCOMPLETE", monthlyCosts, didId, userId, workspaceId, start)
+        _, err = stmt.Exec("NUMBER_RENTAL", "INCOMPLETE", monthlyCosts, didId, userId, workspaceId, start, deduplicationKey)
         if err != nil {
             return err
         }
@@ -327,7 +327,9 @@ func CalculateInitialCharge(price float64, billingType string) (float64, time.Ti
 
 
 func GenerateDeduplicationKey(source string, year int, month int, day int, workspaceId int, didId int) string {
-    return fmt.Sprintf("%s_%d_%d_%d_%d_%d", source, year, month, day, workspaceId, didId)
+    key := fmt.Sprintf("%s_%d_%d_%d_%d_%d", source, year, month, day, workspaceId, didId)
+    helpers.Log(logrus.InfoLevel, fmt.Sprintf("Generated deduplication key: %s", key))
+    return key
 }
 
 func CheckDeduplicationKey(db *sql.DB, key string) int {

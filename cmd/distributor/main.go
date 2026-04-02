@@ -58,14 +58,6 @@ func main() {
 		runBillingDistributor("ANNUAL")
 	})
 
-	// DEBUG: Every Minute
-	if os.Getenv("DISTRIBUTOR_DEBUG") == "1" {
-		_, _ = c.AddFunc("* * * * *", func() {
-			log.Println("[DEBUG] Running per-minute test trigger...")
-			runBillingDistributor("MONTHLY_DEBUG")
-		})
-	}
-
 	// Recordings Distribution (Every 5 minutes)
 	_, _ = c.AddFunc("*/5 * * * *", func() {
 		log.Println("[PROD] Triggering Recordings Distribution...")

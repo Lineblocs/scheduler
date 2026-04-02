@@ -551,7 +551,7 @@ func (s *BillingService) createInvoice(costs *BillingCosts, data *BillingData, l
 		return 0, fmt.Errorf("duplicate invoice creation attempt")
 	}
 
-	insertStmt, err := s.db.Prepare("INSERT INTO users_invoices (`cents`, `cents_including_taxes`, `call_costs`, `recording_costs`, `fax_costs`, `membership_costs`, `number_costs`, `status`, `user_id`, `workspace_id`, `created_at`, `updated_at`, `source`, `tax_metadata`) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	insertStmt, err := s.db.Prepare("INSERT INTO users_invoices (`cents`, `cents_including_taxes`, `call_costs`, `recording_costs`, `fax_costs`, `membership_costs`, `number_costs`, `status`, `user_id`, `workspace_id`, `created_at`, `updated_at`, `source`, `tax_metadata`, `deduplication_key`) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		logger.WithError(err).Error("could not prepare invoice insert query")
 		return 0, err
@@ -567,7 +567,7 @@ func (s *BillingService) createInvoice(costs *BillingCosts, data *BillingData, l
 	var taxes int64
 	taxes = 0
 	centsIncludingTaxes = costs.TotalCosts + taxes
-	result, err := insertStmt.Exec(costs.TotalCosts, centsIncludingTaxes, costs.CallTollsCosts, costs.RecordingCosts, costs.FaxCosts, costs.MembershipCosts, costs.NumberRentalCosts, "INCOMPLETE", data.Workspace.CreatorId, data.Workspace.Id, data.Now, data.Now, source, taxMetadata)
+	result, err := insertStmt.Exec(costs.TotalCosts, centsIncludingTaxes, costs.CallTollsCosts, costs.RecordingCosts, costs.FaxCosts, costs.MembershipCosts, costs.NumberRentalCosts, "INCOMPLETE", data.Workspace.CreatorId, data.Workspace.Id, data.Now, data.Now, source, taxMetadata, deduplicationKey)
 	if err != nil {
 		logger.WithError(err).Error("error creating invoice")
 		return 0, err
