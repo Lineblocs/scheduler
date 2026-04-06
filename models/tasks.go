@@ -18,9 +18,11 @@ type InvoiceLineItem struct {
 }
 
 type MonthlyInvoiceTask struct {
+    AlreadyGenerated    bool              `json:"already_generated"`
     RunID               string            `json:"run_id"`
     WorkspaceID         int               `json:"workspace_id"`
     CreatorID           int               `json:"creator_id"`
+    InvoiceId           string            `json:"invoice_id"`
     InvoiceNo           string            `json:"invoice_no"`
     DueDate             time.Time         `json:"due_date"`
     Cents               int               `json:"cents"`
@@ -36,9 +38,11 @@ type MonthlyInvoiceTask struct {
 }
 
 type AnnualInvoiceTask struct {
+    AlreadyGenerated    bool              `json:"already_generated"`
     RunID               string            `json:"run_id"`
     WorkspaceID         int               `json:"workspace_id"`
     CreatorID           int               `json:"creator_id"`
+    InvoiceId           string            `json:"invoice_id"`
     InvoiceNo           string            `json:"invoice_no"`
     DueDate             time.Time         `json:"due_date"`
     Cents               int               `json:"cents"`
