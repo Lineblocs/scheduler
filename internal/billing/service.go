@@ -40,6 +40,7 @@ type BillingService struct {
 	db                  *sql.DB
 	workspaceRepository repository.WorkspaceRepository
 	paymentRepository   repository.PaymentRepository
+	customizations      *helpers.CustomizationSettingsKV
 	rabbitmqPublisher   RabbitMQPublisher
 }
 
@@ -47,21 +48,37 @@ type RabbitMQPublisher interface {
 	Publish(queue string, message []byte) error
 }
 
-func NewBillingService(db *sql.DB, wRepo repository.WorkspaceRepository, pRepo repository.PaymentRepository) *BillingService {
+func NewBillingService(db *sql.DB, wRepo repository.WorkspaceRepository, pRepo repository.PaymentRepository, customizations *helpers.CustomizationSettingsKV) *BillingService {
 	return &BillingService{
 		db:                  db,
 		workspaceRepository: wRepo,
 		paymentRepository:   pRepo,
+		customizations:      customizations,
 	}
 }
 
-func NewBillingServiceWithPublisher(db *sql.DB, wRepo repository.WorkspaceRepository, pRepo repository.PaymentRepository, publisher RabbitMQPublisher) *BillingService {
+func NewBillingServiceWithPublisher(db *sql.DB, wRepo repository.WorkspaceRepository, pRepo repository.PaymentRepository, customizations *helpers.CustomizationSettingsKV, publisher RabbitMQPublisher) *BillingService {
 	return &BillingService{
 		db:                  db,
 		workspaceRepository: wRepo,
 		paymentRepository:   pRepo,
+		customizations:      customizations,
 		rabbitmqPublisher:   publisher,
 	}
+}
+
+
+func (s *BillingService) isOverageEnabled() bool {
+	var allowed bool = false
+
+	if interfacePtr, ok := s.customizations.Pairs["allow_billing_overage"]; ok && interfacePtr != nil {
+		if boolStruct, ok := (*interfacePtr).(*helpers.CustomizationBooleanValue); ok {
+			result := boolStruct.Value
+			allowed = result
+		}
+	}
+
+	return allowed
 }
 
 // --- RABBITMQ PUBLISHERS (Updated to return errors) ---
@@ -186,19 +203,14 @@ func (s *BillingService) ProcessTask(task models.BillingTask) error {
 		WithField("action", task.Action)
 
 	var err error
-	customizations, err := helpers.GetCustomizationKVs()
-	if err != nil {
-		logger.WithError(err).Error("error getting customization KVs")
-		return err
-	}
-
+	
 	// 1. Route based on Action (Immediate Signup/Upgrade vs. Regular Renewal)
 	if task.Action == "immediate" {
-		err = s.processImmediateProrated(task, customizations, logger)
+		err = s.processImmediateProrated(task, logger)
 	} else if task.BillingType == "ANNUAL" {
-		err = s.processAnnual(task, customizations, logger)
+		err = s.processAnnual(task, logger)
 	} else {
-		err = s.processMonthly(task, customizations, logger)
+		err = s.processMonthly(task, logger)
 	}
 
 	if err != nil {
@@ -216,7 +228,7 @@ func (s *BillingService) ProcessTask(task models.BillingTask) error {
 
 // --- PRORATION & ANCHOR UPDATES ---
 
-func (s *BillingService) processImmediateProrated(task models.BillingTask, customizations *helpers.CustomizationSettingsKV, logger *logrus.Entry) error {
+func (s *BillingService) processImmediateProrated(task models.BillingTask, logger *logrus.Entry) error {
 	billingData, err := s.loadBillingData(task, task.BillingType, logger)
 	if err != nil {
 		return err
@@ -267,7 +279,7 @@ func (s *BillingService) updateSubscriptionAnchor(task models.BillingTask, logge
 	return nil
 }
 
-func (s *BillingService) processMonthly(task models.BillingTask, customizations *helpers.CustomizationSettingsKV, logger *logrus.Entry) error {
+func (s *BillingService) processMonthly(task models.BillingTask, logger *logrus.Entry) error {
 	billingData, err := s.loadBillingData(task, "MONTHLY", logger)
 	if err != nil {
 		return err
@@ -291,7 +303,7 @@ func (s *BillingService) processMonthly(task models.BillingTask, customizations 
 	return s.chargeInvoice(invoiceID, costs, billingData, task, logger)
 }
 
-func (s *BillingService) processAnnual(task models.BillingTask, customizations *helpers.CustomizationSettingsKV, logger *logrus.Entry) error {
+func (s *BillingService) processAnnual(task models.BillingTask, logger *logrus.Entry) error {
 	billingData, err := s.loadBillingData(task, "ANNUAL", logger)
 	if err != nil {
 		return err
@@ -533,6 +545,7 @@ func (s *BillingService) processCallDebit(data *BillingData, costs *BillingCosts
 	if err != nil {
 		return
 	}
+
 	callDurationMinutes := float64(call.DurationNumber / 60)
 	charge, err := utils.ComputeAmountToCharge(float64(costCents), *remainingMinutes, callDurationMinutes)
 	if err == nil {

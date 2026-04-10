@@ -50,7 +50,13 @@ func main() {
 	defer ch.Close()
 
 	publisher := &RabbitMQPublisher{channel: ch}
-	billingSvc := billing.NewBillingServiceWithPublisher(db, wRepo, pRepo, publisher)
+
+	customizations, err := helpers.GetCustomizationKVs()
+	if err != nil {
+		panic(err)
+	}
+
+	billingSvc := billing.NewBillingServiceWithPublisher(db, wRepo, pRepo, customizations, publisher)
 
 	// Declare the queue
 	q, err := ch.QueueDeclare(billingTasksQueue, true, false, false, false, nil)
