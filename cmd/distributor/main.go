@@ -48,27 +48,23 @@ func main() {
 
 	if billingFlow == "ANNIVERSARY" {
 		log.Println("[INIT] Starting Distributor in ANNIVERSARY mode...")
-		// Daily Anniversary Billing Check (Midnight every day)
 		c.AddFunc("0 0 * * *", func() {
 			log.Println("[PROD] Triggering Anniversary Billing Check...")
 			runAnniversaryBillingDistributor("ANNIVERSARY")
 		})
 	} else {
 		log.Println("[INIT] Starting Distributor in ANNUAL/MONTHLY mode...")
-		// Monthly Billing (Midnight on the 1st)
 		c.AddFunc("0 0 1 * *", func() {
 			log.Println("[PROD] Triggering Monthly Billing...")
 			runBillingDistributor("MONTHLY")
 		})
 
-		// Yearly Billing (Midnight on Jan 1st)
 		c.AddFunc("0 0 1 1 *", func() {
 			log.Println("[PROD] Triggering Yearly Billing...")
 			runBillingDistributor("ANNUAL")
 		})
 	}
 
-	// Recordings Distribution (Every 5 minutes)
 	c.AddFunc("*/5 * * * *", func() {
 		log.Println("[PROD] Triggering Recordings Distribution...")
 		runRecordingsDistributor()
@@ -119,14 +115,14 @@ func runAnniversaryBillingDistributor(scheduleType string) {
 	q, _ := ch.QueueDeclare("billing_tasks", true, false, false, false, nil)
 
 	query := `
-		SELECT 
-			s.id, s.workspace_id, w.creator_id, s.current_plan_id, 
-			s.scheduled_plan_id, s.scheduled_effective_date, s.provider_subscription_id,
-			s.next_billing_date, s.billing_anchor_day, s.billing_cycle
-		FROM subscriptions s
-		JOIN workspaces w ON s.workspace_id = w.id
-		WHERE s.status = 'ACTIVE' 
-		  AND (s.next_billing_date IS NULL OR DATE(s.next_billing_date) <= ?)`
+        SELECT 
+            s.id, s.workspace_id, w.creator_id, s.current_plan_id, 
+            s.scheduled_plan_id, s.scheduled_effective_date, s.provider_subscription_id,
+            s.billing_anchor_day, s.billing_cycle
+        FROM subscriptions s
+        JOIN workspaces w ON s.workspace_id = w.id
+        WHERE s.status = 'ACTIVE' 
+          AND (s.next_billing_date IS NULL OR DATE(s.next_billing_date) <= ?)`
 
 	rows, err := db.QueryContext(ctx, query, now.Format("2006-01-02"))
 	if err != nil {
@@ -138,14 +134,13 @@ func runAnniversaryBillingDistributor(scheduleType string) {
 	count := 0
 	for rows.Next() {
 		var subID, workspaceID, creatorID, currentPlanID int
-		var nextBillingDate sql.NullTime
-		var billingAnchorDay sql.NullInt64
+		var anchorDay sql.NullInt64
+		var cycle string
 		var schedPlanID sql.NullInt64
 		var schedDate sql.NullTime
 		var provSubID sql.NullString
-		var billingCycle string
 
-		if err := rows.Scan(&subID, &workspaceID, &creatorID, &currentPlanID, &schedPlanID, &schedDate, &provSubID, &nextBillingDate, &billingAnchorDay, &billingCycle); err != nil {
+		if err := rows.Scan(&subID, &workspaceID, &creatorID, &currentPlanID, &schedPlanID, &schedDate, &provSubID, &anchorDay, &cycle); err != nil {
 			continue
 		}
 
@@ -162,8 +157,9 @@ func runAnniversaryBillingDistributor(scheduleType string) {
 			planToBill = int(schedPlanID.Int64)
 		}
 
-		calculatedDate := utils.CalculateNextDate(now, billingCycle, int(billingAnchorDay.Int64))
-		nextBillingDate = sql.NullTime{Time: calculatedDate, Valid: true}
+		// Calculate intent for the next date
+		nextDate := utils.CalculateNextDate(now, cycle, int(anchorDay.Int64))
+
 		task := models.BillingTask{
 			RunID:                  globalLockKey,
 			BillingType:            "ANNIVERSARY",
@@ -173,7 +169,7 @@ func runAnniversaryBillingDistributor(scheduleType string) {
 			Action:                 action,
 			PlanToBill:             planToBill,
 			ProviderSubscriptionID: provSubID.String,
-			NextBillingDate:        nextBillingDate.Time.Format("2006-01-02"),
+			NextBillingDate:        nextDate.Format("2006-01-02"),
 		}
 
 		body, _ := json.Marshal(task)
@@ -208,10 +204,13 @@ func runBillingDistributor(scheduleType string) {
 
 	now := time.Now().UTC()
 	var lockKeySuffix string
+	var nextDate time.Time
 	if scheduleType == "ANNUAL" {
 		lockKeySuffix = now.Format("2006")
+		nextDate = now.AddDate(1, 0, 0)
 	} else {
 		lockKeySuffix = now.Format("2006-01")
+		nextDate = now.AddDate(0, 1, 0)
 	}
 
 	globalLockKey := fmt.Sprintf("billing_run_lock:%s:%s", scheduleType, lockKeySuffix)
@@ -294,6 +293,7 @@ func runBillingDistributor(scheduleType string) {
 			Action:                 action,
 			PlanToBill:             planToBill,
 			ProviderSubscriptionID: provSubID.String,
+			NextBillingDate:        nextDate.Format("2006-01-02"),
 		}
 
 		body, _ := json.Marshal(task)
@@ -373,7 +373,7 @@ func runRecordingsDistributor() {
 		}
 
 		dedupeKey := fmt.Sprintf("queued:recording:%d:%s", rID, lockKeySuffix)
-		if isNew, _ := rdb.SetNX(ctx, dedupeKey, "true", 24*time.Hour).Result(); !isNew {
+		if isNew, err := rdb.SetNX(ctx, dedupeKey, "true", 24*time.Hour).Result(); err != nil || !isNew {
 			continue
 		}
 

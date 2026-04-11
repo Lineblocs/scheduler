@@ -67,7 +67,6 @@ func NewBillingServiceWithPublisher(db *sql.DB, wRepo repository.WorkspaceReposi
 	}
 }
 
-
 func (s *BillingService) isOverageEnabled() bool {
 	var allowed bool = false
 
@@ -81,7 +80,7 @@ func (s *BillingService) isOverageEnabled() bool {
 	return allowed
 }
 
-// --- RABBITMQ PUBLISHERS (Updated to return errors) ---
+// --- RABBITMQ PUBLISHERS ---
 
 func (s *BillingService) publishFailedPayment(task models.BillingTask, reason string, logger *logrus.Entry) error {
 	if s.rabbitmqPublisher == nil {
@@ -203,26 +202,25 @@ func (s *BillingService) ProcessTask(task models.BillingTask) error {
 		WithField("action", task.Action)
 
 	var err error
-	
+
 	// 1. Route based on Action (Immediate Signup/Upgrade vs. Regular Renewal)
+	// Anniversary distributor uses "renewal" or "upgrade"
 	if task.Action == "immediate" {
 		err = s.processImmediateProrated(task, logger)
 	} else if task.BillingType == "ANNUAL" {
 		err = s.processAnnual(task, logger)
 	} else {
+		// Handles MONTHLY and ANNIVERSARY flows
 		err = s.processMonthly(task, logger)
 	}
 
 	if err != nil {
-		pubErr := s.publishFailedPayment(task, err.Error(), logger)
-		if pubErr != nil {
-			logger.WithError(pubErr).Error("failed to publish failed payment event")
-			return fmt.Errorf("original error: %v, publish error: %v", err, pubErr)
-		}
+		_ = s.publishFailedPayment(task, err.Error(), logger)
 		return err
 	}
 
-	// 2. Update the 'next_billing_date' forward
+	// 2. PAYMENT SUCCESSFUL -> Move anchor forward
+	// We use the NextBillingDate provided by the Distributor for consistency.
 	return s.updateSubscriptionAnchor(task, logger)
 }
 
@@ -245,37 +243,37 @@ func (s *BillingService) processImmediateProrated(task models.BillingTask, logge
 		return err
 	}
 
-	err = s.publishInvoiceGenerated(task, invoiceID, logger)
-	if err != nil {
-		return err
-	}
+	_ = s.publishInvoiceGenerated(task, invoiceID, logger)
 
 	return s.chargeInvoice(invoiceID, costs, billingData, task, logger)
 }
 
 func (s *BillingService) updateSubscriptionAnchor(task models.BillingTask, logger *logrus.Entry) error {
-	var nextDate time.Time
-	now := time.Now()
-
-	if task.BillingType == "ANNUAL" {
-		nextDate = time.Date(now.Year()+1, 1, 1, 0, 0, 0, 0, now.Location())
-	} else {
-		nextDate = time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, now.Location())
+	// IMPORTANT: We do not calculate the date here. 
+	// We parse the string sent by the distributor to ensure the source of truth is singular.
+	nextDate, err := time.Parse("2006-01-02", task.NextBillingDate)
+	if err != nil {
+		logger.WithError(err).Errorf("critical: could not parse NextBillingDate %s from distributor", task.NextBillingDate)
+		return err
 	}
 
-	_, err := s.db.Exec(`
+	// Clean up upgrade metadata upon successful billing
+	_, err = s.db.Exec(`
         UPDATE subscriptions 
         SET next_billing_date = ?, 
+            current_plan_id = ?,
+            scheduled_plan_id = NULL,
+            scheduled_effective_date = NULL,
             last_billed_at = NOW(),
             updated_at = NOW() 
-        WHERE id = ?`, nextDate, task.SubscriptionID)
+        WHERE id = ?`, nextDate, task.PlanToBill, task.SubscriptionID)
 
 	if err != nil {
 		logger.WithError(err).Error("failed to update next_billing_date anchor")
 		return err
 	}
 
-	logger.Infof("Subscription %d anchor pushed to %s", task.SubscriptionID, nextDate.Format("2006-01-02"))
+	logger.Infof("Subscription %d cycle advanced to %s (Plan: %d)", task.SubscriptionID, task.NextBillingDate, task.PlanToBill)
 	return nil
 }
 
@@ -295,10 +293,7 @@ func (s *BillingService) processMonthly(task models.BillingTask, logger *logrus.
 		return err
 	}
 
-	err = s.publishInvoiceGenerated(task, invoiceID, logger)
-	if err != nil {
-		return err
-	}
+	_ = s.publishInvoiceGenerated(task, invoiceID, logger)
 
 	return s.chargeInvoice(invoiceID, costs, billingData, task, logger)
 }
@@ -319,15 +314,12 @@ func (s *BillingService) processAnnual(task models.BillingTask, logger *logrus.E
 		return err
 	}
 
-	err = s.publishInvoiceGenerated(task, invoiceID, logger)
-	if err != nil {
-		return err
-	}
+	_ = s.publishInvoiceGenerated(task, invoiceID, logger)
 
 	return s.chargeInvoice(invoiceID, costs, billingData, task, logger)
 }
 
-// --- CHARGE LOGIC (Updated to check for publishing errors) ---
+// --- CHARGE LOGIC ---
 
 func (s *BillingService) chargeInvoice(invoiceID int64, costs *BillingCosts, data *BillingData, task models.BillingTask, logger *logrus.Entry) error {
 	logger.Infof("Charging user %d, on workspace %d, plan type %s", data.User.Id, data.Workspace.Id, data.Workspace.Plan)

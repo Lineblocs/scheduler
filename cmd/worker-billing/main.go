@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"time"
@@ -88,20 +89,21 @@ func main() {
 		}
 
 		// 1. ATTEMPT PAYMENT PROCESSING
+		// Inside ProcessTask, your logic should record the transaction and handle card failures.
 		err := billingSvc.ProcessTask(task)
 		if err != nil {
 			log.Printf("Payment processing failed for Workspace %d: %v", task.WorkspaceID, err)
-			// Decide here if you want to retry or Ack and log failure.
-			// Usually, for billing, we Ack and mark the subscription as 'past_due' in the DB inside ProcessTask.
+			// Acknowledge the message to remove from queue, but log the failure.
 			d.Ack(false)
 			continue
 		}
 
-		// 2. SUCCESS -> UPDATE THE SUBSCRIPTION CYCLE
+		// 2. SUCCESS -> UPDATE THE SUBSCRIPTION RECORD
+		// We only move the date forward if the payment call above succeeded.
 		if err := finishBillingCycle(db, task); err != nil {
 			log.Printf("CRITICAL: Payment succeeded but DB update failed for Workspace %d: %v", task.WorkspaceID, err)
 		} else {
-			log.Printf("SUCCESS: Workspace %d billed and cycle advanced.", task.WorkspaceID)
+			log.Printf("SUCCESS: Workspace %d billed and cycle advanced to %s.", task.WorkspaceID, task.NextBillingDate)
 		}
 
 		d.Ack(false)
@@ -109,22 +111,14 @@ func main() {
 }
 
 func finishBillingCycle(db *sql.DB, task models.BillingTask) error {
-	var cycle string
-	var anchor int
-	
-	// Fetch necessary metadata
-	err := db.QueryRow("SELECT billing_cycle, billing_anchor_day FROM subscriptions WHERE id = ?", task.SubscriptionID).Scan(&cycle, &anchor)
-	if err != nil {
-		return err
-	}
-
-	// Logic to calculate the next date (handling end-of-month and annual cycles)
-	//nextDate := utils.CalculateNextDate(time.Now().UTC(), cycle, anchor)
+	// Parse the date defined by the Distributor
 	nextDate, err := time.Parse("2006-01-02", task.NextBillingDate)
 	if err != nil {
-		return err
+		return fmt.Errorf("invalid date format in task: %v", err)
 	}
-	// Update DB: Move date forward and clean up any processed scheduled plans (upgrades)
+
+	// Update the database to advance the cycle.
+	// We also clear out any scheduled plans because they have now been applied (Action: "upgrade").
 	_, err = db.Exec(`
 		UPDATE subscriptions 
 		SET next_billing_date = ?, 
