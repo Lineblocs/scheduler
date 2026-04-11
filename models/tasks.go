@@ -82,6 +82,7 @@ type BillingTask struct {
     // Period details for logging and billing transparency
     BillingPeriodStart     time.Time `json:"billing_period_start"`
     BillingPeriodEnd       time.Time `json:"billing_period_end"`
+    NextBillingDate        string    `json:"next_billing_date"`
 }
 
 type RecordingTask struct {

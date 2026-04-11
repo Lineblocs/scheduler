@@ -37,29 +37,39 @@ func main() {
 		log.Fatalf("Critical: Could not connect to Redis: %v", err)
 	}
 
-	if len(os.Args) > 1 && os.Args[1] == "run_debug_crontab" {
-		log.Println("[DEBUG] Running manual CLI trigger...")
-		runBillingDistributor("MONTHLY_DEBUG")
-		os.Exit(0)
+	customizations, err := helpers.GetCustomizationKVs()
+	if err != nil {
+		log.Fatalf("Critical: Could not load customizations: %v", err)
 	}
 
-	// 2. SETUP SCHEDULER
+	billingFlow := utils.GetBillingFlow(customizations)
+
 	c := cron.New()
 
-	// Monthly Billing (Midnight on the 1st)
-	_, _ = c.AddFunc("0 0 1 * *", func() {
-		log.Println("[PROD] Triggering Monthly Billing...")
-		runBillingDistributor("MONTHLY")
-	})
+	if billingFlow == "ANNIVERSARY" {
+		log.Println("[INIT] Starting Distributor in ANNIVERSARY mode...")
+		// Daily Anniversary Billing Check (Midnight every day)
+		c.AddFunc("0 0 * * *", func() {
+			log.Println("[PROD] Triggering Anniversary Billing Check...")
+			runAnniversaryBillingDistributor("ANNIVERSARY")
+		})
+	} else {
+		log.Println("[INIT] Starting Distributor in ANNUAL/MONTHLY mode...")
+		// Monthly Billing (Midnight on the 1st)
+		c.AddFunc("0 0 1 * *", func() {
+			log.Println("[PROD] Triggering Monthly Billing...")
+			runBillingDistributor("MONTHLY")
+		})
 
-	// Yearly Billing (Midnight on Jan 1st)
-	_, _ = c.AddFunc("0 0 1 1 *", func() {
-		log.Println("[PROD] Triggering Yearly Billing...")
-		runBillingDistributor("ANNUAL")
-	})
+		// Yearly Billing (Midnight on Jan 1st)
+		c.AddFunc("0 0 1 1 *", func() {
+			log.Println("[PROD] Triggering Yearly Billing...")
+			runBillingDistributor("ANNUAL")
+		})
+	}
 
 	// Recordings Distribution (Every 5 minutes)
-	_, _ = c.AddFunc("*/5 * * * *", func() {
+	c.AddFunc("*/5 * * * *", func() {
 		log.Println("[PROD] Triggering Recordings Distribution...")
 		runRecordingsDistributor()
 	})
@@ -70,39 +80,26 @@ func main() {
 	select {}
 }
 
-func runBillingDistributor(scheduleType string) {
+func runAnniversaryBillingDistributor(scheduleType string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()
 
-	// --- GLOBAL LOCK LOGIC ---
-	var lockKeySuffix string
-	var lockTTL time.Duration
+	now := time.Now().UTC()
+	lockKeySuffix := now.Format("2006-01-02")
+	globalLockKey := fmt.Sprintf("anniversary_run_lock:%s", lockKeySuffix)
 
-	if scheduleType == "MONTHLY_DEBUG" {
-		lockKeySuffix = time.Now().Format("2006-01-02-15:04")
-		lockTTL = 50 * time.Second
-	} else if scheduleType == "ANNUAL" {
-		lockKeySuffix = time.Now().Format("2006")
-		lockTTL = 23 * time.Hour
-	} else {
-		lockKeySuffix = time.Now().Format("2006-01")
-		lockTTL = 23 * time.Hour
-	}
-
-	globalLockKey := fmt.Sprintf("billing_run_lock:%s:%s", scheduleType, lockKeySuffix)
-
-	locked, err := rdb.SetNX(ctx, globalLockKey, "running", lockTTL).Result()
+	locked, err := rdb.SetNX(ctx, globalLockKey, "running", 23*time.Hour).Result()
 	if err != nil || !locked {
 		log.Printf("[%s] Skip: Lock %s held by another instance.", scheduleType, globalLockKey)
 		return
 	}
 
-	// --- CONNECTIONS ---
 	db, err := utils.GetDBConnection()
 	if err != nil {
 		log.Printf("[%s] Database connection failed: %v", scheduleType, err)
 		return
 	}
+	defer db.Close()
 
 	conn, err := amqp.Dial(os.Getenv("QUEUE_URL"))
 	if err != nil {
@@ -121,73 +118,65 @@ func runBillingDistributor(scheduleType string) {
 	confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 1))
 	q, _ := ch.QueueDeclare("billing_tasks", true, false, false, false, nil)
 
-	// --- DATABASE QUERY ---
-	queryTerm := scheduleType
-	if scheduleType == "MONTHLY_DEBUG" {
-		queryTerm = "MONTHLY"
-	}
-
-	// Safety Gate: We only pick up users whose next_billing_date has arrived.
-	// This prevents double-billing users who signed up and paid mid-month.
 	query := `
-        SELECT 
-            s.id, s.workspace_id, w.creator_id, s.current_plan_id, 
-            s.scheduled_plan_id, s.scheduled_effective_date, s.provider_subscription_id
-        FROM subscriptions s
-        JOIN workspaces w ON s.workspace_id = w.id
-        WHERE s.status = 'ACTIVE' 
-          AND s.billing_cycle = ? 
-          AND (s.next_billing_date IS NULL OR s.next_billing_date <= NOW())
-    `
+		SELECT 
+			s.id, s.workspace_id, w.creator_id, s.current_plan_id, 
+			s.scheduled_plan_id, s.scheduled_effective_date, s.provider_subscription_id,
+			s.next_billing_date, s.billing_anchor_day, s.billing_cycle
+		FROM subscriptions s
+		JOIN workspaces w ON s.workspace_id = w.id
+		WHERE s.status = 'ACTIVE' 
+		  AND (s.next_billing_date IS NULL OR DATE(s.next_billing_date) <= ?)`
 
-	rows, err := db.QueryContext(ctx, query, queryTerm)
+	rows, err := db.QueryContext(ctx, query, now.Format("2006-01-02"))
 	if err != nil {
 		log.Printf("[%s] DB Query Error: %v", scheduleType, err)
 		return
 	}
 	defer rows.Close()
 
-	// --- DISTRIBUTION LOOP ---
 	count := 0
 	for rows.Next() {
 		var subID, workspaceID, creatorID, currentPlanID int
-		var scheduledPlanID sql.NullInt64
-		var scheduledDate sql.NullTime
-		var providerSubID sql.NullString
+		var nextBillingDate sql.NullTime
+		var billingAnchorDay sql.NullInt64
+		var schedPlanID sql.NullInt64
+		var schedDate sql.NullTime
+		var provSubID sql.NullString
+		var billingCycle string
 
-		if err := rows.Scan(&subID, &workspaceID, &creatorID, &currentPlanID, &scheduledPlanID, &scheduledDate, &providerSubID); err != nil {
+		if err := rows.Scan(&subID, &workspaceID, &creatorID, &currentPlanID, &schedPlanID, &schedDate, &provSubID, &nextBillingDate, &billingAnchorDay, &billingCycle); err != nil {
 			continue
 		}
 
-		dedupeKey := fmt.Sprintf("queued:%s:%d:%s", scheduleType, workspaceID, lockKeySuffix)
-		isNew, _ := rdb.SetNX(ctx, dedupeKey, "true", 31*24*time.Hour).Result()
+		dedupeKey := fmt.Sprintf("queued:anniversary:%d:%s", workspaceID, lockKeySuffix)
+		isNew, _ := rdb.SetNX(ctx, dedupeKey, "true", 24*time.Hour).Result()
 		if !isNew {
 			continue
 		}
 
 		action := "renewal"
 		planToBill := currentPlanID
-
-		if scheduledPlanID.Valid && scheduledDate.Valid {
-			if !time.Now().Before(scheduledDate.Time) {
-				action = "upgrade"
-				planToBill = int(scheduledPlanID.Int64)
-			}
+		if schedPlanID.Valid && schedDate.Valid && !now.Before(schedDate.Time) {
+			action = "upgrade"
+			planToBill = int(schedPlanID.Int64)
 		}
 
+		calculatedDate := utils.CalculateNextDate(now, billingCycle, int(billingAnchorDay.Int64))
+		nextBillingDate = sql.NullTime{Time: calculatedDate, Valid: true}
 		task := models.BillingTask{
 			RunID:                  globalLockKey,
-			BillingType:            queryTerm,
+			BillingType:            "ANNIVERSARY",
 			WorkspaceID:            workspaceID,
 			CreatorID:              creatorID,
 			SubscriptionID:         subID,
 			Action:                 action,
 			PlanToBill:             planToBill,
-			ProviderSubscriptionID: providerSubID.String,
+			ProviderSubscriptionID: provSubID.String,
+			NextBillingDate:        nextBillingDate.Time.Format("2006-01-02"),
 		}
 
 		body, _ := json.Marshal(task)
-
 		err = ch.PublishWithContext(ctx, "", q.Name, false, false, amqp.Publishing{
 			DeliveryMode: amqp.Persistent,
 			ContentType:  "application/json",
@@ -200,8 +189,128 @@ func runBillingDistributor(scheduleType string) {
 		}
 
 		select {
-		case confirmed := <-confirms:
-			if confirmed.Ack {
+		case c := <-confirms:
+			if c.Ack {
+				count++
+			} else {
+				rdb.Del(ctx, dedupeKey)
+			}
+		case <-time.After(5 * time.Second):
+			rdb.Del(ctx, dedupeKey)
+		}
+	}
+	log.Printf("[%s] Finished. Total Queued: %d", scheduleType, count)
+}
+
+func runBillingDistributor(scheduleType string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	defer cancel()
+
+	now := time.Now().UTC()
+	var lockKeySuffix string
+	if scheduleType == "ANNUAL" {
+		lockKeySuffix = now.Format("2006")
+	} else {
+		lockKeySuffix = now.Format("2006-01")
+	}
+
+	globalLockKey := fmt.Sprintf("billing_run_lock:%s:%s", scheduleType, lockKeySuffix)
+	locked, err := rdb.SetNX(ctx, globalLockKey, "running", 23*time.Hour).Result()
+	if err != nil || !locked {
+		log.Printf("[%s] Skip: Lock %s held by another instance.", scheduleType, globalLockKey)
+		return
+	}
+
+	db, err := utils.GetDBConnection()
+	if err != nil {
+		log.Printf("[%s] Database connection failed: %v", scheduleType, err)
+		return
+	}
+	defer db.Close()
+
+	conn, err := amqp.Dial(os.Getenv("QUEUE_URL"))
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	ch, err := conn.Channel()
+	if err != nil {
+		return
+	}
+	defer ch.Close()
+
+	_ = ch.Confirm(false)
+	confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 1))
+	q, _ := ch.QueueDeclare("billing_tasks", true, false, false, false, nil)
+
+	query := `
+        SELECT 
+            s.id, s.workspace_id, w.creator_id, s.current_plan_id, 
+            s.scheduled_plan_id, s.scheduled_effective_date, s.provider_subscription_id
+        FROM subscriptions s
+        JOIN workspaces w ON s.workspace_id = w.id
+        WHERE s.status = 'ACTIVE' 
+          AND s.billing_cycle = ? 
+          AND (s.next_billing_date IS NULL OR DATE(s.next_billing_date) <= ?)`
+
+	rows, err := db.QueryContext(ctx, query, scheduleType, now.Format("2006-01-02"))
+	if err != nil {
+		log.Printf("[%s] DB Query Error: %v", scheduleType, err)
+		return
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		var subID, workspaceID, creatorID, currentPlanID int
+		var schedPlanID sql.NullInt64
+		var schedDate sql.NullTime
+		var provSubID sql.NullString
+
+		if err := rows.Scan(&subID, &workspaceID, &creatorID, &currentPlanID, &schedPlanID, &schedDate, &provSubID); err != nil {
+			continue
+		}
+
+		dedupeKey := fmt.Sprintf("queued:%s:%d:%s", scheduleType, workspaceID, lockKeySuffix)
+		isNew, _ := rdb.SetNX(ctx, dedupeKey, "true", 31*24*time.Hour).Result()
+		if !isNew {
+			continue
+		}
+
+		action := "renewal"
+		planToBill := currentPlanID
+		if schedPlanID.Valid && schedDate.Valid && !now.Before(schedDate.Time) {
+			action = "upgrade"
+			planToBill = int(schedPlanID.Int64)
+		}
+
+		task := models.BillingTask{
+			RunID:                  globalLockKey,
+			BillingType:            scheduleType,
+			WorkspaceID:            workspaceID,
+			CreatorID:              creatorID,
+			SubscriptionID:         subID,
+			Action:                 action,
+			PlanToBill:             planToBill,
+			ProviderSubscriptionID: provSubID.String,
+		}
+
+		body, _ := json.Marshal(task)
+		err = ch.PublishWithContext(ctx, "", q.Name, false, false, amqp.Publishing{
+			DeliveryMode: amqp.Persistent,
+			ContentType:  "application/json",
+			Body:         body,
+		})
+
+		if err != nil {
+			rdb.Del(ctx, dedupeKey)
+			continue
+		}
+
+		select {
+		case c := <-confirms:
+			if c.Ack {
 				count++
 			} else {
 				rdb.Del(ctx, dedupeKey)
@@ -214,133 +323,90 @@ func runBillingDistributor(scheduleType string) {
 }
 
 func runRecordingsDistributor() {
-	// 1-hour safety timeout for the entire process
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Hour)
 	defer cancel()
 
-	// --- GLOBAL LOCK LOGIC ---
-	lockKeySuffix := time.Now().Format("2006-01-02-15:04") // Unique per minute
-	lockTTL := 4 * time.Minute                            // Expire before next 5-minute interval
+	lockKeySuffix := time.Now().Format("2006-01-02-15:04")
 	globalLockKey := fmt.Sprintf("recordings_run_lock:%s", lockKeySuffix)
 
-	// SET NX: Only one instance/replica will succeed here
-	locked, err := rdb.SetNX(ctx, globalLockKey, "running", lockTTL).Result()
+	locked, err := rdb.SetNX(ctx, globalLockKey, "running", 4*time.Minute).Result()
 	if err != nil || !locked {
-		log.Printf("[RECORDINGS] Skip: Lock %s held by another instance.", globalLockKey)
 		return
 	}
 
-	log.Printf("[RECORDINGS] Lock Acquired. Processing recordings distribution...")
-
-	// --- CONNECTIONS ---
 	db, err := utils.GetDBConnection()
 	if err != nil {
-		log.Printf("[RECORDINGS] Database connection failed: %v", err)
 		return
 	}
+	defer db.Close()
 
 	conn, err := amqp.Dial(os.Getenv("QUEUE_URL"))
 	if err != nil {
-		log.Printf("[RECORDINGS] RabbitMQ connection failed: %v", err)
 		return
 	}
 	defer conn.Close()
 
 	ch, err := conn.Channel()
 	if err != nil {
-		log.Printf("[RECORDINGS] RabbitMQ channel creation failed: %v", err)
 		return
 	}
 	defer ch.Close()
 
-	// Put channel in Confirm Mode to ensure messages aren't lost
-	if err := ch.Confirm(false); err != nil {
-		log.Printf("[RECORDINGS] Could not enable RabbitMQ confirms: %v", err)
-		return
-	}
+	_ = ch.Confirm(false)
 	confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 1))
+	q, _ := ch.QueueDeclare("recording_tasks", true, false, false, false, nil)
 
-	qRecordings, err := ch.QueueDeclare("recording_tasks", true, false, false, false, nil)
+	rows, err := db.QueryContext(ctx, "SELECT id, status, storage_id, storage_server_ip, trim FROM recordings WHERE status = 'completed' AND relocation_attempts <= 3")
 	if err != nil {
-		log.Printf("[RECORDINGS] RabbitMQ recordings queue declaration failed: %v", err)
 		return
 	}
+	defer rows.Close()
 
-	// --- DATABASE QUERY ---
-	maxRelocationAttempts := 3
-	status := "completed"
-	recordingsResults, err := db.QueryContext(ctx, "SELECT id, status, storage_id, storage_server_ip, trim FROM recordings WHERE status = ? AND relocation_attempts <= ?", status, maxRelocationAttempts)
-	if err != nil {
-		log.Printf("[RECORDINGS] DB Query Error: %v", err)
-		return
-	}
-	defer recordingsResults.Close()
-
-	// --- DISTRIBUTION LOOP ---
-	recordingsCount := 0
-	for recordingsResults.Next() {
-		var recordingID int
-		var storageID string
-		var recordingStatus, storageServerIP string
+	count := 0
+	for rows.Next() {
+		var rID int
+		var rStatus, sID, sIP string
 		var trim sql.NullString
 
-		err := recordingsResults.Scan(
-			&recordingID,
-			&recordingStatus,
-			&storageID,
-			&storageServerIP,
-			&trim,
-		)
-		if err != nil {
-			log.Printf("[RECORDINGS] Row scan error: %v", err)
+		if err := rows.Scan(&rID, &rStatus, &sID, &sIP, &trim); err != nil {
 			continue
 		}
 
-		// DEDUPLICATION: Ensures no recording is queued twice
-		recordingsDedupeKey := fmt.Sprintf("queued:recording:%d:%s", recordingID, lockKeySuffix)
-		isNew, err := rdb.SetNX(ctx, recordingsDedupeKey, "true", 31*24*time.Hour).Result()
-		if err != nil || !isNew {
-			continue // Already queued, skip
+		dedupeKey := fmt.Sprintf("queued:recording:%d:%s", rID, lockKeySuffix)
+		if isNew, _ := rdb.SetNX(ctx, dedupeKey, "true", 24*time.Hour).Result(); !isNew {
+			continue
 		}
 
-		// --- BUILD RECORDINGS PAYLOAD ---
-		recordingTask := models.RecordingTask{
-			ID:              recordingID,
-			Status:          recordingStatus,
-			StorageID:       storageID,
-			StorageServerIP: storageServerIP,
+		task := models.RecordingTask{
+			ID:              rID,
+			Status:          rStatus,
+			StorageID:       sID,
+			StorageServerIP: sIP,
 			Trim:            trim.String,
 		}
 
-		body, _ := json.Marshal(recordingTask)
-
-		// --- PUBLISH TO RECORDINGS QUEUE ---
-		err = ch.PublishWithContext(ctx, "", qRecordings.Name, false, false, amqp.Publishing{
+		body, _ := json.Marshal(task)
+		err = ch.PublishWithContext(ctx, "", q.Name, false, false, amqp.Publishing{
 			DeliveryMode: amqp.Persistent,
 			ContentType:  "application/json",
 			Body:         body,
 		})
 
 		if err != nil {
-			rdb.Del(ctx, recordingsDedupeKey)
-			log.Printf("[RECORDINGS] Publish error for ID %d: %v", recordingID, err)
+			rdb.Del(ctx, dedupeKey)
 			continue
 		}
 
-		// Confirm receipt by RabbitMQ
 		select {
-		case confirmed := <-confirms:
-			if !confirmed.Ack {
-				rdb.Del(ctx, recordingsDedupeKey)
-				log.Printf("[RECORDINGS] RabbitMQ NACK for recording %d", recordingID)
+		case c := <-confirms:
+			if c.Ack {
+				count++
 			} else {
-				recordingsCount++
+				rdb.Del(ctx, dedupeKey)
 			}
 		case <-time.After(5 * time.Second):
-			rdb.Del(ctx, recordingsDedupeKey)
-			log.Printf("[RECORDINGS] Timeout waiting for RabbitMQ ACK for recording %d", recordingID)
+			rdb.Del(ctx, dedupeKey)
 		}
 	}
-
-	log.Printf("[RECORDINGS] Distribution Finished. Total Recordings Queued: %d", recordingsCount)
+	log.Printf("[RECORDINGS] Finished. Queued: %d", count)
 }

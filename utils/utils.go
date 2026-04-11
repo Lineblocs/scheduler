@@ -334,3 +334,35 @@ func CheckDeduplicationKey(db *sql.DB, key string) int {
 
     return count
 }
+
+func GetBillingFlow(customizations *helpers.CustomizationSettingsKV) string {
+	var flow string = ""
+
+	if interfacePtr, ok := customizations.Pairs["billing_flow"]; ok && interfacePtr != nil {
+		if stringStruct, ok := (*interfacePtr).(*helpers.CustomizationStringValue); ok {
+			flow = stringStruct.Value
+		}
+	}
+
+	return flow
+}
+
+func CalculateNextDate(now time.Time, cycle string, anchor int) time.Time {
+	if cycle == "ANNUAL" {
+		return now.AddDate(1, 0, 0)
+	}
+
+	// Monthly calculation with day-of-month clamping
+	// Start with the 1st of the next month
+	nextMonthFirst := time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC)
+	
+	// Find the last day of that next month
+	lastDayOfNextMonth := time.Date(nextMonthFirst.Year(), nextMonthFirst.Month()+1, 0, 0, 0, 0, 0, time.UTC).Day()
+
+	targetDay := anchor
+	if targetDay > lastDayOfNextMonth {
+		targetDay = lastDayOfNextMonth
+	}
+
+	return time.Date(nextMonthFirst.Year(), nextMonthFirst.Month(), targetDay, 0, 0, 0, 0, time.UTC)
+}
