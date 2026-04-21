@@ -245,7 +245,7 @@ func (mb *MonthlyBillingJob) MonthlyBilling() error {
 			continue
 		}
 		defer stmt.Close()
-		res, err := stmt.Exec(cents, callTolls, recordingCosts, faxCosts, membershipCosts, monthlyNumberRentals, "INCOMPLETE", workspace.CreatorId, workspace.Id, currentTime, currentTime)
+		res, err := stmt.Exec(cents, callTolls, recordingCosts, faxCosts, membershipCosts, monthlyNumberRentals, "PENDING", workspace.CreatorId, workspace.Id, currentTime, currentTime)
 		if err != nil {
 			helpers.Log(logrus.ErrorLevel, "error creating invoice..\r\n")
 			helpers.Log(logrus.ErrorLevel, err.Error())
@@ -279,7 +279,7 @@ func (mb *MonthlyBillingJob) MonthlyBilling() error {
 					continue
 				}
 
-				stmt, err := mb.db.Prepare("UPDATE users_invoices SET status = 'COMPLETE', source ='CREDITS', cents_collected = ?, confirmation_number = ? WHERE id = ?")
+				stmt, err := mb.db.Prepare("UPDATE users_invoices SET status = 'PAID', source ='CREDITS', cents_collected = ?, confirmation_number = ? WHERE id = ?")
 				if err != nil {
 					helpers.Log(logrus.ErrorLevel, "could not prepare query..\r\n")
 					continue
@@ -293,7 +293,7 @@ func (mb *MonthlyBillingJob) MonthlyBilling() error {
 			} else {
 				helpers.Log(logrus.InfoLevel, "User does not have enough credits. Charging any payment sources\r\n")
 				// update debit to reflect exactly how much we can charge
-				stmt, err := mb.db.Prepare("UPDATE users_invoices SET status = 'INCOMPLETE', source ='CREDITS', cents_collected = ? WHERE id = ?")
+				stmt, err := mb.db.Prepare("UPDATE users_invoices SET status = 'PENDING', source ='CREDITS', cents_collected = ? WHERE id = ?")
 				if err != nil {
 					helpers.Log(logrus.ErrorLevel, "could not prepare query..\r\n")
 					continue
@@ -316,7 +316,7 @@ func (mb *MonthlyBillingJob) MonthlyBilling() error {
 				if err != nil {
 					// could not charge card.
 					// update invoice record and mark as outstanding
-					stmt, err = mb.db.Prepare("UPDATE users_invoices SET source = 'CARD', status = 'INCOMPLETE', num_attempts = 1, last_attempted = ? WHERE id = ?")
+					stmt, err = mb.db.Prepare("UPDATE users_invoices SET source = 'CARD', status = 'FAILED', num_attempts = 1, last_attempted = ? WHERE id = ?")
 					if err != nil {
 						helpers.Log(logrus.ErrorLevel, "could not prepare query..\r\n")
 						continue
@@ -329,7 +329,7 @@ func (mb *MonthlyBillingJob) MonthlyBilling() error {
 					}
 					continue
 				}
-				stmt, err = mb.db.Prepare("UPDATE users_invoices SET status = 'COMPLETE', source ='CARD', cents_collected = ?, last_attempted = ?, num_attempts = 1 WHERE id = ?")
+				stmt, err = mb.db.Prepare("UPDATE users_invoices SET status = 'PAID', source ='CARD', cents_collected = ?, last_attempted = ?, num_attempts = 1 WHERE id = ?")
 				if err != nil {
 					helpers.Log(logrus.ErrorLevel, "could not prepare query..\r\n")
 					continue
@@ -353,7 +353,7 @@ func (mb *MonthlyBillingJob) MonthlyBilling() error {
 			if err != nil {
 				helpers.Log(logrus.ErrorLevel, "error charging user..\r\n")
 				helpers.Log(logrus.ErrorLevel, err.Error())
-				stmt, err := mb.db.Prepare("UPDATE users_invoices SET status = 'INCOMPLETE', source = 'CARD', cents_collected = 0.0 WHERE id = ?")
+				stmt, err := mb.db.Prepare("UPDATE users_invoices SET status = 'FAILED', source = 'CARD', cents_collected = 0.0 WHERE id = ?")
 				if err != nil {
 					helpers.Log(logrus.ErrorLevel, "could not prepare query..\r\n")
 					continue
@@ -374,7 +374,7 @@ func (mb *MonthlyBillingJob) MonthlyBilling() error {
 				continue
 			}
 
-			stmt, err := mb.db.Prepare("UPDATE users_invoices SET status = 'COMPLETE', source ='CARD', cents_collected = ?, confirmation_number = ? WHERE id = ?")
+			stmt, err := mb.db.Prepare("UPDATE users_invoices SET status = 'PAID', source ='CARD', cents_collected = ?, confirmation_number = ? WHERE id = ?")
 			if err != nil {
 				helpers.Log(logrus.ErrorLevel, "could not prepare query..\r\n")
 				continue

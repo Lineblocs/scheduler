@@ -192,7 +192,7 @@ func TestMonthlyBilling(t *testing.T) {
 		debitQuery := "INSERT INTO users_debits (`source`, `status`, `cents`, `module_id`, `user_id`, `workspace_id`, `created_at`) VALUES ( ?, ?, ?, ?, ?, ?)"
 		mockSql.ExpectPrepare(regexp.QuoteMeta(debitQuery)).
 			ExpectExec().
-			WithArgs("NUMBER_RENTAL", "INCOMPLETE", monthlyCost, moduleId, testUser.Id, testWorkspace.Id, sqlmock.AnyArg()).
+			WithArgs("NUMBER_RENTAL", "PENDING", monthlyCost, moduleId, testUser.Id, testWorkspace.Id, sqlmock.AnyArg()).
 			WillReturnResult(sqlmock.NewResult(1, 1))
 
 		// Mock expectations for user count query
@@ -227,11 +227,11 @@ func TestMonthlyBilling(t *testing.T) {
 		invoiceQuery := "INSERT INTO users_invoices (`cents`, `call_costs`, `recording_costs`, `fax_costs`, `membership_costs`, `number_costs`, `status`, `user_id`, `workspace_id`, `created_at`, `updated_at`) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 		mockSql.ExpectPrepare(regexp.QuoteMeta(invoiceQuery)).
 			ExpectExec().
-			WithArgs(float64(1000), float64(0), float64(0), float64(0), membershipCost, float64(monthlyCost), "INCOMPLETE", testUser.Id, testWorkspace.Id, sqlmock.AnyArg(), sqlmock.AnyArg()).
+			WithArgs(float64(1000), float64(0), float64(0), float64(0), membershipCost, float64(monthlyCost), "PENDING", testUser.Id, testWorkspace.Id, sqlmock.AnyArg(), sqlmock.AnyArg()).
 			WillReturnResult(sqlmock.NewResult(1, 1))
 
 		// Mock expectations for the LastInsertId
-		sqlInsertId := "UPDATE users_invoices SET status = 'COMPLETE', source ='CARD', cents_collected = ?, confirmation_number = ? WHERE id = ?"
+		sqlInsertId := "UPDATE users_invoices SET status = 'PAID', source ='CARD', cents_collected = ?, confirmation_number = ? WHERE id = ?"
 		escapedInsertId := regexp.QuoteMeta(sqlInsertId)
 		mockSql.ExpectPrepare(escapedInsertId).
 			ExpectExec().
@@ -298,7 +298,7 @@ func TestMonthlyBilling(t *testing.T) {
 		debitQuery := "INSERT INTO users_debits (`source`, `status`, `cents`, `module_id`, `user_id`, `workspace_id`, `created_at`) VALUES ( ?, ?, ?, ?, ?, ?)"
 		mockSql.ExpectPrepare(regexp.QuoteMeta(debitQuery)).
 			ExpectExec().
-			WithArgs("NUMBER_RENTAL", "INCOMPLETE", monthlyCost, moduleId, testUser.Id, testWorkspace.Id, sqlmock.AnyArg()).
+			WithArgs("NUMBER_RENTAL", "PENDING", monthlyCost, moduleId, testUser.Id, testWorkspace.Id, sqlmock.AnyArg()).
 			WillReturnResult(sqlmock.NewResult(1, 1))
 
 		// Mock expectations for user count query
@@ -333,11 +333,11 @@ func TestMonthlyBilling(t *testing.T) {
 		invoiceQuery := "INSERT INTO users_invoices (`cents`, `call_costs`, `recording_costs`, `fax_costs`, `membership_costs`, `number_costs`, `status`, `user_id`, `workspace_id`, `created_at`, `updated_at`) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 		mockSql.ExpectPrepare(regexp.QuoteMeta(invoiceQuery)).
 			ExpectExec().
-			WithArgs(float64(1000), float64(extraCallCost), float64(0), float64(0), membershipCost, float64(0), "INCOMPLETE", testUser.Id, testWorkspace.Id, sqlmock.AnyArg(), sqlmock.AnyArg()).
+			WithArgs(float64(1000), float64(extraCallCost), float64(0), float64(0), membershipCost, float64(0), "PENDING", testUser.Id, testWorkspace.Id, sqlmock.AnyArg(), sqlmock.AnyArg()).
 			WillReturnResult(sqlmock.NewResult(1, 1))
 
 		// Mock expectations for the LastInsertId
-		sqlInsertId := "UPDATE users_invoices SET status = 'COMPLETE', source ='CARD', cents_collected = ?, confirmation_number = ? WHERE id = ?"
+		sqlInsertId := "UPDATE users_invoices SET status = 'PAID', source ='CARD', cents_collected = ?, confirmation_number = ? WHERE id = ?"
 		escapedInsertId := regexp.QuoteMeta(sqlInsertId)
 		mockSql.ExpectPrepare(escapedInsertId).
 			ExpectExec().
@@ -463,7 +463,7 @@ func testMonthlyBillingSetup(mockSql sqlmock.Sqlmock, mockWorkspace *mocks.Works
 	debitQuery := "INSERT INTO users_debits (`source`, `status`, `cents`, `module_id`, `user_id`, `workspace_id`, `created_at`) VALUES ( ?, ?, ?, ?, ?, ?)"
 	mockSql.ExpectPrepare(regexp.QuoteMeta(debitQuery)).
 		ExpectExec().
-		WithArgs("NUMBER_RENTAL", "INCOMPLETE", sampleData.Cents, sampleData.ModuleId, sampleData.User.Id, sampleData.Workspace.Id, sqlmock.AnyArg()).
+		WithArgs("NUMBER_RENTAL", "PENDING", sampleData.Cents, sampleData.ModuleId, sampleData.User.Id, sampleData.Workspace.Id, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	// Mock expectations for user count query
@@ -500,12 +500,12 @@ func testMonthlyBillingSetup(mockSql sqlmock.Sqlmock, mockWorkspace *mocks.Works
 	invoiceQuery := "INSERT INTO users_invoices (`cents`, `call_costs`, `recording_costs`, `fax_costs`, `membership_costs`, `number_costs`, `status`, `user_id`, `workspace_id`, `created_at`, `updated_at`) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 	mockSql.ExpectPrepare(regexp.QuoteMeta(invoiceQuery)).
 		ExpectExec().
-		WithArgs(float64(sampleData.Cents), float64(ExtraCallCost), float64(0), float64(0), memberShipCost, float64(0), "INCOMPLETE", sampleData.User.Id, sampleData.Workspace.Id, sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WithArgs(float64(sampleData.Cents), float64(ExtraCallCost), float64(0), float64(0), memberShipCost, float64(0), "PENDING", sampleData.User.Id, sampleData.Workspace.Id, sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	// Mock expectations for the LastInsertId
 	totalCost := memberShipCost + ExtraCallCost
-	sqlInsertId := "UPDATE users_invoices SET status = 'COMPLETE', source ='CARD', cents_collected = ?, confirmation_number = ? WHERE id = ?"
+	sqlInsertId := "UPDATE users_invoices SET status = 'PAID', source ='CARD', cents_collected = ?, confirmation_number = ? WHERE id = ?"
 	escapedInsertId := regexp.QuoteMeta(sqlInsertId)
 	mockSql.ExpectPrepare(escapedInsertId).
 		ExpectExec().

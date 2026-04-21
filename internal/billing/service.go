@@ -338,7 +338,7 @@ func (s *BillingService) chargeWithCredits(invoiceID int64, costs *BillingCosts,
 	}
 
 	logger.Warn("Insufficient credits for payment")
-	s.markInvoiceChargeIncomplete(invoiceID, logger)
+	s.markInvoiceChargeFailed(invoiceID, logger)
 	return fmt.Errorf("insufficient credits")
 }
 
@@ -351,7 +351,7 @@ func (s *BillingService) chargeCreditsOnly(invoiceID int64, totalCosts int64, da
 		return err
 	}
 
-	updateStmt, err := s.db.Prepare("UPDATE users_invoices SET status = 'COMPLETE', source ='CREDITS', cents_collected = ?, confirmation_number = ? WHERE id = ?")
+	updateStmt, err := s.db.Prepare("UPDATE users_invoices SET status = 'PAID', source ='CREDITS', cents_collected = ?, confirmation_number = ? WHERE id = ?")
 	if err != nil {
 		logger.WithError(err).Error("could not prepare update query")
 		return err
@@ -382,7 +382,7 @@ func (s *BillingService) chargeWithCard(invoiceID int64, costs *BillingCosts, da
 	chargeResult, err := s.paymentRepository.ChargeCustomer(data.BillingParams.(*utils.BillingParams), data.User, data.Workspace, &invoice)
 	if err != nil {
 		logger.WithError(err).Error("error charging user")
-		s.markInvoiceChargeIncomplete(invoiceID, logger)
+		s.markInvoiceChargeFailed(invoiceID, logger)
 		return err
 	}
 
@@ -392,7 +392,7 @@ func (s *BillingService) chargeWithCard(invoiceID int64, costs *BillingCosts, da
 	}
 
 	logger.Infof("Payment charged successfully for invoice %d with gateway ID %s", invoiceID, chargeResult.PaymentGatewayID)
-	return s.markInvoiceChargeSuccess(invoiceID, chargeResult.PaymentGatewayID, int64(costs.TotalCosts), logger)
+	return s.markInvoiceChargePaid(invoiceID, chargeResult.PaymentGatewayID, int64(costs.TotalCosts), logger)
 }
 
 // --- DATA LOADING & CALCULATIONS ---
@@ -629,7 +629,7 @@ func (s *BillingService) createInvoice(costs *BillingCosts, data *BillingData, l
 	defer insertStmt.Close()
 
 	taxMetadata := utils.CreateTaxMetadata(costs.CallTollsCosts, costs.RecordingCosts, costs.FaxCosts, costs.MembershipCosts, costs.NumberRentalCosts)
-	result, err := insertStmt.Exec(costs.TotalCosts, costs.TotalCosts, costs.CallTollsCosts, costs.RecordingCosts, costs.FaxCosts, costs.MembershipCosts, costs.NumberRentalCosts, "INCOMPLETE", data.Workspace.CreatorId, data.Workspace.Id, data.Now, data.Now, "SUBSCRIPTION", taxMetadata, deduplicationKey)
+	result, err := insertStmt.Exec(costs.TotalCosts, costs.TotalCosts, costs.CallTollsCosts, costs.RecordingCosts, costs.FaxCosts, costs.MembershipCosts, costs.NumberRentalCosts, "PENDING", data.Workspace.CreatorId, data.Workspace.Id, data.Now, data.Now, "SUBSCRIPTION", taxMetadata, deduplicationKey)
 	if err != nil {
 		return 0, err
 	}
@@ -673,16 +673,16 @@ func (s *BillingService) createInvoice(costs *BillingCosts, data *BillingData, l
 
 // --- STATUS UPDATES ---
 
-func (s *BillingService) markInvoiceChargeIncomplete(invoiceID int64, logger *logrus.Entry) error {
-	_, err := s.db.Exec("UPDATE users_invoices SET status = 'INCOMPLETE' WHERE id = ?", invoiceID)
+func (s *BillingService) markInvoiceChargeFailed(invoiceID int64, logger *logrus.Entry) error {
+	_, err := s.db.Exec("UPDATE users_invoices SET status = 'FAILED' WHERE id = ?", invoiceID)
 	return err
 }
 
-func (s *BillingService) markInvoiceChargeSuccess(invoiceID int64, gatewayID string, totalCosts int64, logger *logrus.Entry) error {
+func (s *BillingService) markInvoiceChargePaid(invoiceID int64, gatewayID string, totalCosts int64, logger *logrus.Entry) error {
 	confirmNumber, err := utils.CreateInvoiceConfirmationNumber()
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec("UPDATE users_invoices SET status = 'COMPLETE', source ='CARD', cents_collected = ?, confirmation_number = ?, payment_gateway_id = ? WHERE id = ?", totalCosts, confirmNumber, gatewayID, invoiceID)
+	_, err = s.db.Exec("UPDATE users_invoices SET status = 'PAID', source ='CARD', cents_collected = ?, confirmation_number = ?, payment_gateway_id = ? WHERE id = ?", totalCosts, confirmNumber, gatewayID, invoiceID)
 	return err
 }

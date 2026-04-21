@@ -215,7 +215,7 @@ func TestAnnualBilling(t *testing.T) {
 		// Mock expectations for the INSERT into users_invoices
 		membershipCosts := float64(0) * float64(worksSpaceUsers)
 		totalCostsCents := int(math.Ceil(membershipCosts))
-		invoiceStatus := "INCOMPLETE"
+		invoiceStatus := "PENDING"
 		regularCostsCents := 0
 
 		// Mock expectations for the INSERT into users_invoices
@@ -226,7 +226,7 @@ func TestAnnualBilling(t *testing.T) {
 			WillReturnResult(sqlmock.NewResult(1, 1))
 
 		// Mock expectations for the LastInsertId
-		sqlInsertId := "UPDATE users_invoices SET status = 'COMPLETE', source ='CARD', cents_collected = ?, confirmation_number = ? WHERE id = ?"
+		sqlInsertId := "UPDATE users_invoices SET status = 'PAID', source ='CARD', cents_collected = ?, confirmation_number = ? WHERE id = ?"
 		escapedInsertId := regexp.QuoteMeta(sqlInsertId)
 		mockSql.ExpectPrepare(escapedInsertId).
 			ExpectExec().
@@ -284,7 +284,7 @@ func TestAnnualBilling(t *testing.T) {
 		// Mock expectations for the INSERT into users_invoices
 		membershipCosts := float64(0) * float64(worksSpaceUsers)
 		totalCostsCents := int(math.Ceil(membershipCosts))
-		invoiceStatus := "INCOMPLETE"
+		invoiceStatus := "PENDING"
 		regularCostsCents := 0
 
 		// Mock expectations for the INSERT into users_invoices
@@ -295,7 +295,7 @@ func TestAnnualBilling(t *testing.T) {
 			WillReturnResult(sqlmock.NewResult(1, 1))
 
 		// Mock expectations for the LastInsertId
-		sqlInsertId := "UPDATE users_invoices SET status = 'INCOMPLETE', source = 'CARD', cents_collected = 0.0 WHERE id = ?"
+		sqlInsertId := "UPDATE users_invoices SET status = 'PENDING', source = 'CARD', cents_collected = 0.0 WHERE id = ?"
 		escapedInsertId := regexp.QuoteMeta(sqlInsertId)
 		mockSql.ExpectPrepare(escapedInsertId).
 			ExpectExec().
@@ -353,7 +353,7 @@ func TestAnnualBilling(t *testing.T) {
 		// Mock expectations for the INSERT into users_invoices
 		membershipCosts := float64(0) * float64(worksSpaceUsers)
 		totalCostsCents := int(math.Ceil(membershipCosts))
-		invoiceStatus := "INCOMPLETE"
+		invoiceStatus := "PENDING"
 		regularCostsCents := 0
 
 		// Mock expectations for the INSERT into users_invoices
@@ -364,7 +364,7 @@ func TestAnnualBilling(t *testing.T) {
 			WillReturnResult(sqlmock.NewResult(1, 1))
 
 		// Mock expectations for the LastInsertId
-		sqlInsertId := "UPDATE users_invoices SET status = 'COMPLETE', source ='CARD', cents_collected = ?, confirmation_number = ? WHERE id = ?"
+		sqlInsertId := "UPDATE users_invoices SET status = 'PAID', source ='CARD', cents_collected = ?, confirmation_number = ? WHERE id = ?"
 		escapedInsertId := regexp.QuoteMeta(sqlInsertId)
 		mockSql.ExpectPrepare(escapedInsertId).
 			ExpectExec().

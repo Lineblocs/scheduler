@@ -258,7 +258,7 @@ func CreateMonthlyNumberRentalDebit(db *sql.DB, workspaceId int, userId int, sta
             return err
         }
         defer stmt.Close()
-        _, err = stmt.Exec("NUMBER_RENTAL", "INCOMPLETE", monthlyCosts, didId, userId, workspaceId, start, deduplicationKey)
+        _, err = stmt.Exec("NUMBER_RENTAL", "PENDING", monthlyCosts, didId, userId, workspaceId, start, deduplicationKey)
         if err != nil {
             return err
         }

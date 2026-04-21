@@ -23,7 +23,7 @@ func RetryFailedBillingAttempts() error {
 	}
 	results, err := db.Conn.Query(`SELECT users_invoices.id, users_invoices.workspace_id, workspaces.creator_id, users_invoices.cents
 	INNER JOIN workspaces ON workspaces.id = users_invoices.workspace_id
-	FROM users_invoices WHERE users_invoices.status = 'INCOMPLETE'`)
+	FROM users_invoices WHERE users_invoices.status = 'FAILED'`)
 	if err != nil {
 		return err
 	}
@@ -57,7 +57,7 @@ func RetryFailedBillingAttempts() error {
 		err = utils.ChargeCustomer(db.Conn, billingParams, user, workspace, &invoice)
 		currentTime := time.Now()
 		if err != nil { // failed again
-			stmt, err := db.Conn.Prepare("UPDATE users_invoices SET status = 'INCOMPLETE', source = 'CARD', last_attempted = ? WHERE id = ?")
+			stmt, err := db.Conn.Prepare("UPDATE users_invoices SET status = 'PENDING', source = 'CARD', last_attempted = ? WHERE id = ?")
 			if err != nil {
 				helpers.Log(logrus.ErrorLevel, "could not prepare query..\r\n")
 				continue
@@ -77,7 +77,7 @@ func RetryFailedBillingAttempts() error {
 		}
 
 		// mark as paid
-		stmt, err := db.Conn.Prepare("UPDATE users_invoices SET status = 'COMPLETE', source ='CREDITS', cents_collected = ?, last_attempted = ?, num_attempts = num_attempts + 1, confirmation_number = ? WHERE id = ?")
+		stmt, err := db.Conn.Prepare("UPDATE users_invoices SET status = 'PAID', source ='CREDITS', cents_collected = ?, last_attempted = ?, num_attempts = num_attempts + 1, confirmation_number = ? WHERE id = ?")
 		if err != nil {
 			helpers.Log(logrus.ErrorLevel, "could not prepare query..\r\n")
 			continue

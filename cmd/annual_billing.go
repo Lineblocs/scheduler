@@ -94,7 +94,7 @@ func (ab *AnnualBillingJob) AnnualBilling() error {
 		}
 		defer stmt.Close()
 
-		res, err := stmt.Exec(regularCostsCents, totalCostsCents, "INCOMPLETE", workspace.CreatorId, workspace.Id, currentTime, currentTime)
+		res, err := stmt.Exec(regularCostsCents, totalCostsCents, "PENDING", workspace.CreatorId, workspace.Id, currentTime, currentTime)
 		if err != nil {
 			helpers.Log(logrus.ErrorLevel, "error creating invoice..\r\n")
 			helpers.Log(logrus.ErrorLevel, err.Error())
@@ -120,7 +120,7 @@ func (ab *AnnualBillingJob) AnnualBilling() error {
 			helpers.Log(logrus.ErrorLevel, "error charging user..\r\n")
 			helpers.Log(logrus.ErrorLevel, err.Error())
 
-			stmt, err := ab.db.Prepare("UPDATE users_invoices SET status = 'INCOMPLETE', source = 'CARD', cents_collected = 0.0 WHERE id = ?")
+			stmt, err := ab.db.Prepare("UPDATE users_invoices SET status = 'FAILED', source = 'CARD', cents_collected = 0.0 WHERE id = ?")
 			if err != nil {
 				helpers.Log(logrus.ErrorLevel, "could not prepare query..\r\n")
 				continue
@@ -142,7 +142,7 @@ func (ab *AnnualBillingJob) AnnualBilling() error {
 			continue
 		}
 
-		stmt, err = ab.db.Prepare("UPDATE users_invoices SET status = 'COMPLETE', source ='CARD', cents_collected = ?, confirmation_number = ? WHERE id = ?")
+		stmt, err = ab.db.Prepare("UPDATE users_invoices SET status = 'PAID', source ='CARD', cents_collected = ?, confirmation_number = ? WHERE id = ?")
 		if err != nil {
 			helpers.Log(logrus.ErrorLevel, "could not prepare query..\r\n")
 			continue
