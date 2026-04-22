@@ -66,14 +66,14 @@ func (s *RecordingService) ProcessRecording(task models.RecordingTask) error {
 	}
 
 	// 3. Upload to S3
-	filename := fmt.Sprintf("%d.wav", task.StorageID)
+	filename := fmt.Sprintf("%s.wav", task.StorageID)
 	s3Url, err := s.uploadToS3(data, filename)
 	if err != nil {
 		return err
 	}
 
 	// 4. Update Database
-	_, err = s.db.Exec("UPDATE recordings SET s3_url = ?, status='processed' WHERE id = ?", s3Url, task.ID)
+	_, err = s.db.Exec("UPDATE recordings SET s3_url = ?, status='FINALIZED' WHERE id = ?", s3Url, task.ID)
 	if err != nil {
 		return fmt.Errorf("failed to update database: %w", err)
 	}
