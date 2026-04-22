@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"lineblocs.com/scheduler/models"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
@@ -18,6 +19,7 @@ type RecordingService struct {
 	settings  *models.Settings // Shared settings model
 }
 
+
 func NewRecordingService(db *sql.DB, ari *ari.Client, settings *models.Settings) *RecordingService {
 	return &RecordingService{
 		db:        db,
@@ -26,12 +28,27 @@ func NewRecordingService(db *sql.DB, ari *ari.Client, settings *models.Settings)
 	}
 }
 
+// TODO: this should be updated to get a unique
+// ARI connection for each storage server. in essence, it should pick a connection
+// from a list/hashmap
+func (s *RecordingService) retrieveARIConnection(storageServerIp string) (*ari.Client, error) {
+	return s.ariClient, nil
+}
+
+
 func (s *RecordingService) ProcessRecording(task models.RecordingTask) error {
 	fmt.Printf("Processing Recording ID: %d, StorageID: %s\n", task.ID, task.StorageID)
 
+	client, err :=s.retrieveARIConnection(task.StorageServerIP)
+	if err != nil {
+		return err
+	}
+
 	// 1. Get File from ARI
-	src := ari.NewKey(ari.StoredRecordingKey, task.StorageID)
-	data, err := (*s.ariClient).StoredRecording().File(src)
+	//src := ari.NewKey(ari.StoredRecordingKey, task.StorageID)
+	src := ari.NewKey(ari.StoredRecordingKey, strconv.Itoa(task.ID))
+
+	data, err := (*client).StoredRecording().File(src)
 	if err != nil {
 		s.db.Exec("UPDATE recordings SET relocation_attempts = relocation_attempts + 1 WHERE id = ?", task.ID)
 		return fmt.Errorf("failed to get file from ARI: %w", err)

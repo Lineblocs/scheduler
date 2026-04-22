@@ -14,6 +14,8 @@ const (
 	queueName = "recording_tasks"
 )
 
+
+
 func main() {
 	db, _ := utils.GetDBConnection()
 	ariClient, _ := utils.CreateARIConnection()
@@ -51,7 +53,7 @@ func main() {
 
 		if err := storageSvc.ProcessRecording(task); err != nil {
 			log.Printf("Worker failed to process recording %d: %v", task.ID, err)
-			d.Nack(false, true) // Requeue for retry
+			d.Ack(false)
 		} else {
 			d.Ack(false)
 		}
