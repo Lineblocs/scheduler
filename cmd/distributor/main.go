@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	helpers "github.com/Lineblocs/go-helpers"
@@ -19,7 +21,11 @@ import (
 	"github.com/robfig/cron/v3"
 )
 
-var rdb *redis.Client
+// Global variables shared across goroutines
+var (
+	rdb *redis.Client
+	db  *sql.DB
+)
 
 func main() {
 	logDestination := utils.Config("LOG_DESTINATIONS")
@@ -37,15 +43,21 @@ func main() {
 		log.Fatalf("Critical: Could not connect to Redis: %v", err)
 	}
 
+	// 2. INITIALIZE DATABASE (Shared Pool)
+	db, err = utils.GetDBConnection()
+	if err != nil {
+		log.Fatalf("Critical: Database connection failed: %v", err)
+	}
+
 	customizations, err := helpers.GetCustomizationKVs()
 	if err != nil {
 		log.Fatalf("Critical: Could not load customizations: %v", err)
 	}
 
 	billingFlow := utils.GetBillingFlow(customizations)
-
 	c := cron.New()
 
+	// 3. CONFIGURE CRON TASKS
 	if billingFlow == "ANNIVERSARY" {
 		log.Println("[INIT] Starting Distributor in ANNIVERSARY mode...")
 		c.AddFunc("0 0 * * *", func() {
@@ -70,10 +82,30 @@ func main() {
 		runRecordingsDistributor()
 	})
 
-	log.Printf("Billing Task Distributor started. Redis at: %s", opt.Addr)
+	log.Printf("Scheduler started. Redis: %s", opt.Addr)
 	c.Start()
 
-	select {}
+	// 4. GRACEFUL SHUTDOWN LOGIC
+	// Create a channel to listen for OS signals
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
+	// Wait for a signal (Blocks main goroutine)
+	sig := <-stop
+	log.Printf("Received signal: %v. Shutting down gracefully...", sig)
+
+	// Cleanup resources
+	c.Stop() // Stops the cron scheduler from starting new jobs
+	if db != nil {
+		log.Println("Closing Database pool...")
+		db.Close()
+	}
+	if rdb != nil {
+		log.Println("Closing Redis connection...")
+		rdb.Close()
+	}
+
+	log.Println("Process exited.")
 }
 
 func runAnniversaryBillingDistributor(scheduleType string) {
@@ -89,13 +121,6 @@ func runAnniversaryBillingDistributor(scheduleType string) {
 		log.Printf("[%s] Skip: Lock %s held by another instance.", scheduleType, globalLockKey)
 		return
 	}
-
-	db, err := utils.GetDBConnection()
-	if err != nil {
-		log.Printf("[%s] Database connection failed: %v", scheduleType, err)
-		return
-	}
-	defer db.Close()
 
 	conn, err := amqp.Dial(os.Getenv("QUEUE_URL"))
 	if err != nil {
@@ -157,7 +182,6 @@ func runAnniversaryBillingDistributor(scheduleType string) {
 			planToBill = int(schedPlanID.Int64)
 		}
 
-		// Calculate intent for the next date
 		nextDate := utils.CalculateNextDate(now, cycle, int(anchorDay.Int64))
 
 		task := models.BillingTask{
@@ -219,13 +243,6 @@ func runBillingDistributor(scheduleType string) {
 		log.Printf("[%s] Skip: Lock %s held by another instance.", scheduleType, globalLockKey)
 		return
 	}
-
-	db, err := utils.GetDBConnection()
-	if err != nil {
-		log.Printf("[%s] Database connection failed: %v", scheduleType, err)
-		return
-	}
-	defer db.Close()
 
 	conn, err := amqp.Dial(os.Getenv("QUEUE_URL"))
 	if err != nil {
@@ -323,98 +340,85 @@ func runBillingDistributor(scheduleType string) {
 }
 
 func runRecordingsDistributor() {
-    // We still use a context to prevent this specific run from hanging forever
-    ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
-    defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
+	defer cancel()
 
-    db, err := utils.GetDBConnection()
-    if err != nil {
-        log.Printf("[RECORDINGS] DB connection failed: %v", err)
-        return
-    }
-    defer db.Close()
+	conn, err := amqp.Dial(os.Getenv("QUEUE_URL"))
+	if err != nil {
+		log.Printf("[RECORDINGS] MQ connection failed: %v", err)
+		return
+	}
+	defer conn.Close()
 
-    conn, err := amqp.Dial(os.Getenv("QUEUE_URL"))
-    if err != nil {
-        log.Printf("[RECORDINGS] MQ connection failed: %v", err)
-        return
-    }
-    defer conn.Close()
+	ch, err := conn.Channel()
+	if err != nil {
+		return
+	}
+	defer ch.Close()
 
-    ch, err := conn.Channel()
-    if err != nil {
-        return
-    }
-    defer ch.Close()
+	_ = ch.Confirm(false)
+	confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 1))
 
-    // SET UP CONFIRMATIONS ONCE (Moved outside the loop)
-    _ = ch.Confirm(false)
-    // Using a buffered channel for confirmations to improve performance
-    confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 1)) 
-
-    query := `
+	query := `
         SELECT id, status, storage_id, storage_server_ip, trim 
         FROM recordings 
         WHERE (status = 'COMPLETED' OR status = 'FAILED') 
           AND relocation_attempts <= 3`
 
-    rows, err := db.QueryContext(ctx, query)
-    if err != nil {
-        log.Printf("[RECORDINGS] Query error: %v", err)
-        return
-    }
-    defer rows.Close()
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		log.Printf("[RECORDINGS] Query error: %v", err)
+		return
+	}
+	defer rows.Close()
 
-    count := 0
-    for rows.Next() {
-        var rID int
-        var rStatus, sID, sIP string
-        var trim sql.NullString
+	count := 0
+	for rows.Next() {
+		var rID int
+		var rStatus, sID, sIP string
+		var trim sql.NullString
 
-        if err := rows.Scan(&rID, &rStatus, &sID, &sIP, &trim); err != nil {
-            continue
-        }
+		if err := rows.Scan(&rID, &rStatus, &sID, &sIP, &trim); err != nil {
+			continue
+		}
 
-        // DEDUPE KEY: Still highly recommended so you don't 
-        // queue the same recording multiple times per hour
-        dedupeKey := fmt.Sprintf("queued:recording:%d", rID)
-        if isNew, err := rdb.SetNX(ctx, dedupeKey, "true", 30*time.Minute).Result(); err != nil || !isNew {
-            continue
-        }
+		dedupeKey := fmt.Sprintf("queued:recording:%d", rID)
+		if isNew, err := rdb.SetNX(ctx, dedupeKey, "true", 30*time.Minute).Result(); err != nil || !isNew {
+			continue
+		}
 
-        task := models.RecordingTask{
-            ID:              rID,
-            Status:          rStatus,
-            StorageID:       sID,
-            StorageServerIP: sIP,
-            Trim:            trim.String,
-        }
+		task := models.RecordingTask{
+			ID:              rID,
+			Status:          rStatus,
+			StorageID:       sID,
+			StorageServerIP: sIP,
+			Trim:            trim.String,
+		}
 
-        body, _ := json.Marshal(task)
-        err = ch.PublishWithContext(ctx, "", "recording_tasks", false, false, amqp.Publishing{
-            DeliveryMode: amqp.Persistent,
-            ContentType:  "application/json",
-            Body:         body,
-        })
+		body, _ := json.Marshal(task)
+		err = ch.PublishWithContext(ctx, "", "recording_tasks", false, false, amqp.Publishing{
+			DeliveryMode: amqp.Persistent,
+			ContentType:  "application/json",
+			Body:         body,
+		})
 
-        if err != nil {
-            rdb.Del(ctx, dedupeKey)
-            log.Printf("[RECORDINGS] Publish error: %v", err)
-            continue
-        }
+		if err != nil {
+			rdb.Del(ctx, dedupeKey)
+			log.Printf("[RECORDINGS] Publish error: %v", err)
+			continue
+		}
 
-        // WAIT FOR ACK (Ensures message reached the broker)
-        select {
-        case c := <-confirms:
-            if c.Ack {
-                count++
-            } else {
-                rdb.Del(ctx, dedupeKey)
-            }
-        case <-time.After(2 * time.Second):
-            rdb.Del(ctx, dedupeKey)
-            log.Printf("[RECORDINGS] Timeout waiting for ACK on ID %d", rID)
-        }
-    }
-    log.Printf("[RECORDINGS] Finished. Total Queued: %d", count)
+		select {
+		case c := <-confirms:
+			if c.Ack {
+				count++
+			} else {
+				rdb.Del(ctx, dedupeKey)
+			}
+		case <-time.After(2 * time.Second):
+			rdb.Del(ctx, dedupeKey)
+			log.Printf("[RECORDINGS] Timeout waiting for ACK on ID %d", rID)
+		}
+	}
+	log.Printf("[RECORDINGS] Finished. Total Queued: %d", count)
 }
