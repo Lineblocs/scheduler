@@ -11,20 +11,26 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"github.com/CyCoreSystems/ari/v5"
+	helpers "github.com/Lineblocs/go-helpers"
 )
 
 type RecordingService struct {
 	db        *sql.DB
 	ariClient *ari.Client
-	settings  *models.Settings // Shared settings model
+	settings  *helpers.APICredentials // Shared settings model
 }
 
 
 func NewRecordingService(db *sql.DB, ari *ari.Client, settings *models.Settings) *RecordingService {
+	apiCreds, err := helpers.GetAPICredentials()
+	if err != nil {
+		panic(fmt.Sprintf("Critical: Could not load API credentials: %v", err))
+	}
+
 	return &RecordingService{
 		db:        db,
 		ariClient: ari,
-		settings:  settings,
+		settings:  apiCreds,
 	}
 }
 
