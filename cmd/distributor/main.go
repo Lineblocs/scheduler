@@ -356,7 +356,7 @@ func runRecordingsDistributor() {
 	confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 1))
 	q, _ := ch.QueueDeclare("recording_tasks", true, false, false, false, nil)
 
-	rows, err := db.QueryContext(ctx, "SELECT id, status, storage_id, storage_server_ip, trim FROM recordings WHERE status = 'COMPLETED' AND relocation_attempts <= 3")
+	rows, err := db.QueryContext(ctx, "SELECT id, status, storage_id, storage_server_ip, trim FROM recordings WHERE (status = 'COMPLETED' OR status = 'FAILED') AND relocation_attempts <= 3")
 	if err != nil {
 		return
 	}

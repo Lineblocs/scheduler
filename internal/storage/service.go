@@ -43,7 +43,7 @@ func (s *RecordingService) retrieveARIConnection(storageServerIp string) (*ari.C
 
 
 func (s *RecordingService) ProcessRecording(task models.RecordingTask) error {
-	fmt.Printf("Processing Recording ID: %d, StorageID: %s\n", task.ID, task.StorageID)
+	fmt.Printf("Starting processing for Recording ID: %d, StorageID: %s, StorageServerIP: %s\n", task.ID, task.StorageID, task.StorageServerIP)
 
 	client, err :=s.retrieveARIConnection(task.StorageServerIP)
 	if err != nil {
@@ -56,7 +56,7 @@ func (s *RecordingService) ProcessRecording(task models.RecordingTask) error {
 
 	data, err := (*client).StoredRecording().File(src)
 	if err != nil {
-		s.db.Exec("UPDATE recordings SET relocation_attempts = relocation_attempts + 1 WHERE id = ?", task.ID)
+		s.db.Exec("UPDATE recordings SET relocation_attempts = relocation_attempts + 1, status='FAILED' WHERE id = ?", task.ID)
 		return fmt.Errorf("failed to get file from ARI: %w", err)
 	}
 
@@ -69,20 +69,34 @@ func (s *RecordingService) ProcessRecording(task models.RecordingTask) error {
 	filename := fmt.Sprintf("%s.wav", task.StorageID)
 	s3Url, err := s.uploadToS3(data, filename)
 	if err != nil {
+		_, dbErr := s.db.Exec("UPDATE recordings SET relocation_attempts = relocation_attempts + 1, status='FAILED' WHERE id = ?", task.ID)
+		if dbErr != nil {
+			fmt.Printf("failed to update database status to FAILED: %v\n", dbErr)
+		}
+
 		return err
 	}
 
 	// 4. Update Database
 	_, err = s.db.Exec("UPDATE recordings SET s3_url = ?, status='FINALIZED' WHERE id = ?", s3Url, task.ID)
 	if err != nil {
+		fmt.Printf("failed to update database status to FINALIZED: %v\n", err)
 		return fmt.Errorf("failed to update database: %w", err)
 	}
 
 	// 5. Cleanup ARI
-	return (*s.ariClient).StoredRecording().Delete(src)
+	err = (*s.ariClient).StoredRecording().Delete(src)
+	if err != nil {
+		fmt.Printf("failed to delete recording from ARI: %v\n", err)
+		return fmt.Errorf("failed to delete recording from ARI: %w", err)
+	}
+
+	fmt.Printf("Successfully processed recording ID: %d, S3 URL: %s\n", task.ID, s3Url)
+	return nil
 }
 
 func (s *RecordingService) uploadToS3(data []byte, filename string) (string, error) {
+	fmt.Printf("Uploading file %s to S3\n", filename)
 	sess, _ := session.NewSession(&aws.Config{
 		Region: aws.String(s.settings.Credentials["aws_region"]),
 		Credentials: credentials.NewStaticCredentials(
@@ -99,5 +113,7 @@ func (s *RecordingService) uploadToS3(data []byte, filename string) (string, err
 	if err != nil {
 		return "", err
 	}
+
+	fmt.Printf("File uploaded to S3: %s\n", result.Location)
 	return aws.StringValue(&result.Location), nil
 }
