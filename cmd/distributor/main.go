@@ -65,7 +65,7 @@ func main() {
 		})
 	}
 
-	c.AddFunc("*/5 * * * *", func() {
+	c.AddFunc("* * * * *", func() {
 		log.Println("[PROD] Triggering Recordings Distribution...")
 		runRecordingsDistributor()
 	})
@@ -323,26 +323,20 @@ func runBillingDistributor(scheduleType string) {
 }
 
 func runRecordingsDistributor() {
-    ctx, cancel := context.WithTimeout(context.Background(), 1*time.Hour)
+    // We still use a context to prevent this specific run from hanging forever
+    ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
     defer cancel()
-
-    // FIX 1: Use a STATIC lock key. TTL ensures it clears if the app crashes.
-    globalLockKey := "recordings_run_lock:global"
-    locked, err := rdb.SetNX(ctx, globalLockKey, "running", 4*time.Minute).Result()
-    if err != nil || !locked {
-        log.Println("[RECORDINGS] Skip: Another instance is already running.")
-        return
-    }
-    // Optional: defer rdb.Del(ctx, globalLockKey) if you want it to run as soon as possible next time
 
     db, err := utils.GetDBConnection()
     if err != nil {
+        log.Printf("[RECORDINGS] DB connection failed: %v", err)
         return
     }
     defer db.Close()
 
     conn, err := amqp.Dial(os.Getenv("QUEUE_URL"))
     if err != nil {
+        log.Printf("[RECORDINGS] MQ connection failed: %v", err)
         return
     }
     defer conn.Close()
@@ -353,12 +347,20 @@ func runRecordingsDistributor() {
     }
     defer ch.Close()
 
-    // FIX 2: Set up confirmations ONCE per run, not per row
+    // SET UP CONFIRMATIONS ONCE (Moved outside the loop)
     _ = ch.Confirm(false)
-    confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 100)) // Buffered channel
+    // Using a buffered channel for confirmations to improve performance
+    confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 1)) 
 
-    rows, err := db.QueryContext(ctx, "SELECT id, status, storage_id, storage_server_ip, trim FROM recordings WHERE (status = 'COMPLETED' OR status = 'FAILED') AND relocation_attempts <= 3")
+    query := `
+        SELECT id, status, storage_id, storage_server_ip, trim 
+        FROM recordings 
+        WHERE (status = 'COMPLETED' OR status = 'FAILED') 
+          AND relocation_attempts <= 3`
+
+    rows, err := db.QueryContext(ctx, query)
     if err != nil {
+        log.Printf("[RECORDINGS] Query error: %v", err)
         return
     }
     defer rows.Close()
@@ -373,9 +375,10 @@ func runRecordingsDistributor() {
             continue
         }
 
-        // Use a static date for dedupe to ensure we don't re-queue the same ID in the same day/hour
-        dedupeKey := fmt.Sprintf("queued:recording:%d:%s", rID, time.Now().Format("2006-01-02-15"))
-        if isNew, err := rdb.SetNX(ctx, dedupeKey, "true", 1*time.Hour).Result(); err != nil || !isNew {
+        // DEDUPE KEY: Still highly recommended so you don't 
+        // queue the same recording multiple times per hour
+        dedupeKey := fmt.Sprintf("queued:recording:%d", rID)
+        if isNew, err := rdb.SetNX(ctx, dedupeKey, "true", 30*time.Minute).Result(); err != nil || !isNew {
             continue
         }
 
@@ -396,10 +399,11 @@ func runRecordingsDistributor() {
 
         if err != nil {
             rdb.Del(ctx, dedupeKey)
+            log.Printf("[RECORDINGS] Publish error: %v", err)
             continue
         }
 
-        // FIX 3: Drain the confirmation channel properly
+        // WAIT FOR ACK (Ensures message reached the broker)
         select {
         case c := <-confirms:
             if c.Ack {
@@ -407,12 +411,10 @@ func runRecordingsDistributor() {
             } else {
                 rdb.Del(ctx, dedupeKey)
             }
-        case <-time.After(5 * time.Second): 
-            // In a high-throughput scenario, consider using a single timer 
-            // or WaitForConfirms for the whole batch.
+        case <-time.After(2 * time.Second):
             rdb.Del(ctx, dedupeKey)
-            log.Printf("[RECORDINGS] Timeout waiting for ACK for ID %d", rID)
+            log.Printf("[RECORDINGS] Timeout waiting for ACK on ID %d", rID)
         }
     }
-    log.Printf("[RECORDINGS] Finished. Queued: %d", count)
+    log.Printf("[RECORDINGS] Finished. Total Queued: %d", count)
 }
