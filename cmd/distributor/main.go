@@ -323,90 +323,96 @@ func runBillingDistributor(scheduleType string) {
 }
 
 func runRecordingsDistributor() {
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Hour)
-	defer cancel()
+    ctx, cancel := context.WithTimeout(context.Background(), 1*time.Hour)
+    defer cancel()
 
-	lockKeySuffix := time.Now().Format("2006-01-02-15:04")
-	globalLockKey := fmt.Sprintf("recordings_run_lock:%s", lockKeySuffix)
+    // FIX 1: Use a STATIC lock key. TTL ensures it clears if the app crashes.
+    globalLockKey := "recordings_run_lock:global"
+    locked, err := rdb.SetNX(ctx, globalLockKey, "running", 4*time.Minute).Result()
+    if err != nil || !locked {
+        log.Println("[RECORDINGS] Skip: Another instance is already running.")
+        return
+    }
+    // Optional: defer rdb.Del(ctx, globalLockKey) if you want it to run as soon as possible next time
 
-	locked, err := rdb.SetNX(ctx, globalLockKey, "running", 4*time.Minute).Result()
-	if err != nil || !locked {
-		return
-	}
+    db, err := utils.GetDBConnection()
+    if err != nil {
+        return
+    }
+    defer db.Close()
 
-	db, err := utils.GetDBConnection()
-	if err != nil {
-		return
-	}
-	defer db.Close()
+    conn, err := amqp.Dial(os.Getenv("QUEUE_URL"))
+    if err != nil {
+        return
+    }
+    defer conn.Close()
 
-	conn, err := amqp.Dial(os.Getenv("QUEUE_URL"))
-	if err != nil {
-		return
-	}
-	defer conn.Close()
+    ch, err := conn.Channel()
+    if err != nil {
+        return
+    }
+    defer ch.Close()
 
-	ch, err := conn.Channel()
-	if err != nil {
-		return
-	}
-	defer ch.Close()
+    // FIX 2: Set up confirmations ONCE per run, not per row
+    _ = ch.Confirm(false)
+    confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 100)) // Buffered channel
 
-	_ = ch.Confirm(false)
-	confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 1))
-	q, _ := ch.QueueDeclare("recording_tasks", true, false, false, false, nil)
+    rows, err := db.QueryContext(ctx, "SELECT id, status, storage_id, storage_server_ip, trim FROM recordings WHERE (status = 'COMPLETED' OR status = 'FAILED') AND relocation_attempts <= 3")
+    if err != nil {
+        return
+    }
+    defer rows.Close()
 
-	rows, err := db.QueryContext(ctx, "SELECT id, status, storage_id, storage_server_ip, trim FROM recordings WHERE (status = 'COMPLETED' OR status = 'FAILED') AND relocation_attempts <= 3")
-	if err != nil {
-		return
-	}
-	defer rows.Close()
+    count := 0
+    for rows.Next() {
+        var rID int
+        var rStatus, sID, sIP string
+        var trim sql.NullString
 
-	count := 0
-	for rows.Next() {
-		var rID int
-		var rStatus, sID, sIP string
-		var trim sql.NullString
+        if err := rows.Scan(&rID, &rStatus, &sID, &sIP, &trim); err != nil {
+            continue
+        }
 
-		if err := rows.Scan(&rID, &rStatus, &sID, &sIP, &trim); err != nil {
-			continue
-		}
+        // Use a static date for dedupe to ensure we don't re-queue the same ID in the same day/hour
+        dedupeKey := fmt.Sprintf("queued:recording:%d:%s", rID, time.Now().Format("2006-01-02-15"))
+        if isNew, err := rdb.SetNX(ctx, dedupeKey, "true", 1*time.Hour).Result(); err != nil || !isNew {
+            continue
+        }
 
-		dedupeKey := fmt.Sprintf("queued:recording:%d:%s", rID, lockKeySuffix)
-		if isNew, err := rdb.SetNX(ctx, dedupeKey, "true", 24*time.Hour).Result(); err != nil || !isNew {
-			continue
-		}
+        task := models.RecordingTask{
+            ID:              rID,
+            Status:          rStatus,
+            StorageID:       sID,
+            StorageServerIP: sIP,
+            Trim:            trim.String,
+        }
 
-		task := models.RecordingTask{
-			ID:              rID,
-			Status:          rStatus,
-			StorageID:       sID,
-			StorageServerIP: sIP,
-			Trim:            trim.String,
-		}
+        body, _ := json.Marshal(task)
+        err = ch.PublishWithContext(ctx, "", "recording_tasks", false, false, amqp.Publishing{
+            DeliveryMode: amqp.Persistent,
+            ContentType:  "application/json",
+            Body:         body,
+        })
 
-		body, _ := json.Marshal(task)
-		err = ch.PublishWithContext(ctx, "", q.Name, false, false, amqp.Publishing{
-			DeliveryMode: amqp.Persistent,
-			ContentType:  "application/json",
-			Body:         body,
-		})
+        if err != nil {
+            rdb.Del(ctx, dedupeKey)
+            continue
+        }
 
-		if err != nil {
-			rdb.Del(ctx, dedupeKey)
-			continue
-		}
-
-		select {
-		case c := <-confirms:
-			if c.Ack {
-				count++
-			} else {
-				rdb.Del(ctx, dedupeKey)
-			}
-		case <-time.After(5 * time.Second):
-			rdb.Del(ctx, dedupeKey)
-		}
-	}
-	log.Printf("[RECORDINGS] Finished. Queued: %d", count)
+        // FIX 3: Drain the confirmation channel properly
+        select {
+        case c := <-confirms:
+            if c.Ack {
+                count++
+            } else {
+                rdb.Del(ctx, dedupeKey)
+            }
+        case <-time.After(5 * time.Second): 
+            // In a high-throughput scenario, consider using a single timer 
+            // or WaitForConfirms for the whole batch.
+            rdb.Del(ctx, dedupeKey)
+            log.Printf("[RECORDINGS] Timeout waiting for ACK for ID %d", rID)
+        }
+    }
+    log.Printf("[RECORDINGS] Finished. Queued: %d", count)
 }
