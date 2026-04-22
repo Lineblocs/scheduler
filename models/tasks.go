@@ -69,10 +69,13 @@ type BillingTask struct {
     BillingType            string    `json:"billing_type"` // "MONTHLY" or "ANNUAL"
     WorkspaceID            int       `json:"workspace_id"`
     CreatorID              int       `json:"creator_id"`
+    UserID                 int       `json:"user_id"`
     SubscriptionID         int       `json:"subscription_id"`
     Action                 string    `json:"action"`       
     PlanToBill             int       `json:"plan_to_bill"` 
     ProviderSubscriptionID string    `json:"provider_subscription_id"`
+    InvoiceID              string    `json:"invoice_id"`
+    PaymentMethodID        string    `json:"payment_method_id"`
     
     // Amount is used when Action is ActionImmediate. 
     // If Action is ActionRenewal, the worker should use the PlanToBill price.

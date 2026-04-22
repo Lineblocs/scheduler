@@ -294,10 +294,10 @@ func runBillingDistributor(scheduleType string) {
 			continue
 		}
 
-		action := "renewal"
+		action := "BILLING_RENEWAL"
 		planToBill := currentPlanID
 		if schedPlanID.Valid && schedDate.Valid && !now.Before(schedDate.Time) {
-			action = "upgrade"
+			action = "BILLING_UPGRADE"
 			planToBill = int(schedPlanID.Int64)
 		}
 

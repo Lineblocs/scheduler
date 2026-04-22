@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strconv"
 	"time"
 
 	helpers "github.com/Lineblocs/go-helpers"
@@ -205,11 +206,14 @@ func (s *BillingService) ProcessTask(task models.BillingTask) error {
 
 	// 1. Route based on Action (Immediate Signup/Upgrade vs. Regular Renewal)
 	// Anniversary distributor uses "renewal" or "upgrade"
-	if task.Action == "immediate" {
+	switch {
+	case task.Action == "IMMEDIATE":
 		err = s.processImmediateProrated(task, logger)
-	} else if task.BillingType == "ANNUAL" {
+	case task.Action == "SETTLE_INVOICE":
+		err = s.processSettleInvoice(task, logger)
+	case task.BillingType == "ANNUAL" && (task.Action == "BILLING_RENEWAL" || task.Action == "BILLING_UPGRADE"):
 		err = s.processAnnual(task, logger)
-	} else {
+	case task.BillingType == "MONTHLY" && (task.Action == "BILLING_RENEWAL" || task.Action == "BILLING_UPGRADE"):
 		// Handles MONTHLY and ANNIVERSARY flows
 		err = s.processMonthly(task, logger)
 	}
@@ -244,6 +248,49 @@ func (s *BillingService) processImmediateProrated(task models.BillingTask, logge
 	}
 
 	_ = s.publishInvoiceGenerated(task, invoiceID, logger)
+
+	return s.chargeInvoice(invoiceID, costs, billingData, task, logger)
+}
+
+func (s *BillingService) processSettleInvoice(task models.BillingTask, logger *logrus.Entry) error {
+	logger.Info("Demo: processing invoice settlement")
+
+	billingData, err := s.loadBillingData(task, task.BillingType, logger)
+	if err != nil {
+		return err
+	}
+
+	// For demo purposes, we create a generic settlement cost based on the task amount
+	costs := &BillingCosts{
+		MembershipCosts:   0,
+		TotalCosts:        int64(task.Amount * 100),
+		InvoiceDesc:       "Settlement for outstanding balance (Demo)",
+	}
+
+	// In a real scenario, you might retrieve an existing PENDING invoice by ID
+	// Here we generate a new invoice to demonstrate the charge flow
+	invoiceID, err := strconv.ParseInt(task.InvoiceID, 10, 64)
+	if err != nil {
+		logger.WithError(err).Error("invalid invoice id in task")
+		return err
+	}
+
+	var totalCents int64
+	var status string
+	var source string
+	var createdAt time.Time
+	err = s.db.QueryRow("SELECT cents, status, source, created_at FROM users_invoices WHERE id = ?", invoiceID).Scan(&totalCents, &status, &source, &createdAt)
+	
+	if err != nil {
+		logger.WithError(err).Error("could not find existing invoice for settlement")
+		return err
+	}
+
+	logger.Infof("Loaded existing invoice %d: %d cents, status: %s, source: %s, created_at: %v", invoiceID, totalCents, status, source, createdAt)
+	costs = &BillingCosts{
+		TotalCosts:  totalCents,
+		InvoiceDesc: fmt.Sprintf("Settlement for invoice %d", invoiceID),
+	}
 
 	return s.chargeInvoice(invoiceID, costs, billingData, task, logger)
 }
