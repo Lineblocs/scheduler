@@ -5,4 +5,7 @@ type UserInvoice struct {
 	Id                 int    `json:"id"`
 	Cents              int    `json:"cents"`
 	ConfirmationNumber int    `json:"confirmation_number"`
+	PaymentMethodId    *string `json:"payment_method_id,omitempty"`
+	CardLast4          string  `json:"card_last_4"`
+	CardBrand          string  `json:"card_brand"`
 }

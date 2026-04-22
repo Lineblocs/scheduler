@@ -425,6 +425,11 @@ func (s *BillingService) chargeWithCard(invoiceID int64, costs *BillingCosts, da
 		Cents:       cardChargeAmount,
 		InvoiceDesc: costs.InvoiceDesc,
 	}
+	if task.PaymentMethodId != "" {
+		invoice.PaymentMethodId = &task.paymentMethodId
+		invoice.CardLast4 = task.CardLast4
+		invoice.CardBrand = task.CardBrand
+	}
 
 	chargeResult, err := s.paymentRepository.ChargeCustomer(data.BillingParams.(*utils.BillingParams), data.User, data.Workspace, &invoice)
 	if err != nil {

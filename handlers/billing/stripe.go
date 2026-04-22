@@ -49,11 +49,22 @@ func (hndl *StripeBillingHandler) ChargeCustomer(user *helpers.User, workspace *
     var paymentMethodId string
     var cardLast4 string
     var cardBrand string
-    row := db.QueryRow("SELECT id, stripe_payment_method_id, last_4, issuer FROM users_cards WHERE `workspace_id`=? AND `primary` = 1", workspace.Id)
 
-    err := row.Scan(&id, &paymentMethodId, &cardLast4, &cardBrand)
-    if err != nil {
-        return nil, err
+    // Use the attributes directly from the invoice object
+    if invoice.PaymentMethodId != nil {
+        paymentMethodId = *invoice.PaymentMethodId
+        cardLast4 = invoice.CardLast4
+        cardBrand = invoice.CardBrand
+    }
+
+    // Removed the SQL lookup
+    var row *sql.Row
+    if invoice.PaymentMethodId == nil {
+        row = db.QueryRow("SELECT id, stripe_payment_method_id, last_4, issuer FROM users_cards WHERE `workspace_id`=? AND `stripe_payment_method_id` = ?", workspace.Id, invoice.PaymentMethodId)
+        err := row.Scan(&id, &paymentMethodId, &cardLast4, &cardBrand)
+        if err != nil {
+            return nil, err
+        }
     }
 
     domain := os.Getenv("DEPLOYMENT_DOMAIN")
