@@ -277,6 +277,17 @@ func GetWorkspaceUserCount(db *sql.DB, workspaceId int) int {
     return userCount
 }
 
+func GetWorkspaceUserCountInPeriod(db *sql.DB, workspaceId int, billingStartDate time.Time, billingEndDate time.Time) int {
+    rows, err := db.Query("SELECT COUNT(*) as count FROM workspaces_users WHERE workspace_id = ? AND activated_account_at BETWEEN ? AND ? AND status IN ('ACTIVE', 'TERMINATED')", workspaceId, billingStartDate, billingEndDate)
+    if err != nil {
+        return 0
+    }
+    defer rows.Close()
+    userCount, _ := GetRowCount(rows)
+    return userCount
+}
+
+
 func CreateInvoiceConfirmationNumber() (string, error) {
     b := make([]byte, 12)
     if _, err := rand.Read(b); err != nil {

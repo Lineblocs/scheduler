@@ -425,8 +425,8 @@ func (s *BillingService) chargeWithCard(invoiceID int64, costs *BillingCosts, da
 		Cents:       cardChargeAmount,
 		InvoiceDesc: costs.InvoiceDesc,
 	}
-	if task.PaymentMethodId != "" {
-		invoice.PaymentMethodId = &task.paymentMethodId
+	if task.PaymentMethodID != "" {
+		invoice.PaymentMethodId = &task.PaymentMethodID
 		invoice.CardLast4 = task.CardLast4
 		invoice.CardBrand = task.CardBrand
 	}
@@ -516,7 +516,7 @@ func (s *BillingService) loadBillingData(task models.BillingTask, billingType st
 
 func (s *BillingService) calculateMonthlyCosts(data *BillingData, logger *logrus.Entry) (*BillingCosts, error) {
 	costs := &BillingCosts{}
-	userCount := utils.GetWorkspaceUserCount(s.db, data.Workspace.Id)
+	userCount := utils.GetWorkspaceUserCountInPeriod(s.db, data.Workspace.Id, data.BillingPeriodStart, data.BillingPeriodEnd)
 	costs.MembershipCosts = int64(data.Plan.MonthlyCostCents * userCount)
 
 	err := utils.CreateMonthlyNumberRentalDebit(s.db, data.Workspace.Id, data.User.Id, data.BillingPeriodStart)
