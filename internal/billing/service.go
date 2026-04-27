@@ -434,7 +434,8 @@ func (s *BillingService) chargeWithCard(invoiceID int64, costs *BillingCosts, da
 	chargeResult, err := s.paymentRepository.ChargeCustomer(data.BillingParams.(*utils.BillingParams), data.User, data.Workspace, &invoice)
 	if err != nil {
 		logger.WithError(err).Error("error charging user")
-		s.markInvoiceChargeFailed(invoiceID, logger)
+		_ = s.publishFailedPayment(task, err.Error(), logger)
+		_ = s.markInvoiceChargeFailed(invoiceID, logger)
 		return err
 	}
 
