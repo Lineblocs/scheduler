@@ -97,16 +97,8 @@ func (s *RecordingService) ProcessRecording(task models.RecordingTask) error {
 
 
 	if task.CreateAISummary {
-		fmt.Printf("Generating AI summary for Recording ID: %d\n", task.ID)
-		summary, err := s.generateAISummary(task.ID, data)
-		if err != nil {
-			fmt.Printf("Failed to generate AI summary for Recording ID: %d, error: %v\n", task.ID, err)
-		} else {
-            // Save the summary results to our new tables
-            if err := s.saveSummaryToDB(task.ID, summary); err != nil {
-                fmt.Printf("Failed to save summary to database: %v\n", err)
-            }
-        }
+		// Run AI summary generation in a separate goroutine so it doesn't block the main processing flow
+		go s.processAISummary(task)
 	}
 
 	// 3. Upload to S3
@@ -137,6 +129,20 @@ func (s *RecordingService) ProcessRecording(task models.RecordingTask) error {
 
 	fmt.Printf("Successfully processed recording ID: %d, S3 URL: %s\n", task.ID, s3Url)
 	return nil
+}
+
+
+func (s *RecordingService) processAISummary(task models.RecordingTask) error {
+	fmt.Printf("Generating AI summary for Recording ID: %d\n", task.ID)
+	summary, err := s.generateAISummary(task.ID, data)
+	if err != nil {
+		fmt.Printf("Failed to generate AI summary for Recording ID: %d, error: %v\n", task.ID, err)
+	} else {
+		// Save the summary results to our new tables
+		if err := s.saveSummaryToDB(task.ID, summary); err != nil {
+			fmt.Printf("Failed to save summary to database: %v\n", err)
+		}
+	}
 }
 
 func (s *RecordingService) generateAISummary(callid int, rawwavdata []byte) (*CallSummary, error) {
