@@ -238,6 +238,100 @@ Respond ONLY with the JSON object.`
     return &summary, nil
 }
 
+func (s *RecordingService) generateAISummaryWithGemini(callid int, rawwavdata []byte) (*CallSummary, error) {
+    apiKey := s.settings.Credentials["gemini_api_key"]
+    if apiKey == "" {
+        return nil, fmt.Errorf("gemini API key not configured")
+    }
+
+    base64Audio := base64.StdEncoding.EncodeToString(rawwavdata)
+
+    // Construct the payload using Gemini's structured output format
+    payload := map[string]interface{}{
+        "contents": []map[string]interface{}{
+            {
+                "parts": []map[string]interface{}{
+                    {
+                        "inline_data": map[string]string{
+                            "mime_type": "audio/wav",
+                            "data":      base64Audio,
+                        },
+                    },
+                    {
+                        "text": "Analyze the provided audio recording of a call. Extract and format the information as a JSON object.",
+                    },
+                },
+            },
+        },
+        "generationConfig": map[string]interface{}{
+            "response_mime_type": "application/json",
+            // You can optionally define the schema here for 100% reliability, 
+            // but Gemini's response_mime_type is usually sufficient when paired with a good prompt.
+            "candidate_count": 1,
+            "max_output_tokens": 4096,
+        },
+    }
+
+    jsonData, err := json.Marshal(payload)
+    if err != nil {
+        return nil, err
+    }
+
+    // Gemini API uses a query parameter for the API key
+    apiURL := "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=" + apiKey
+
+    req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonData))
+    if err != nil {
+        return nil, err
+    }
+    req.Header.Set("Content-Type", "application/json")
+
+    client := &http.Client{}
+    resp, err := client.Do(req)
+    if err != nil {
+        return nil, err
+    }
+    defer resp.Body.Close()
+
+    bodyBytes, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return nil, err
+    }
+
+    if resp.StatusCode != http.StatusOK {
+        return nil, fmt.Errorf("gemini api error (status %d): %s", resp.StatusCode, string(bodyBytes))
+    }
+
+    // Map the Gemini response structure
+    var geminiResp struct {
+        Candidates []struct {
+            Content struct {
+                Parts []struct {
+                    Text string `json:"text"`
+                } `json:"parts"`
+            } `json:"content"`
+        } `json:"candidates"`
+    }
+
+    if err := json.Unmarshal(bodyBytes, &geminiResp); err != nil {
+        return nil, err
+    }
+
+    if len(geminiResp.Candidates) == 0 || len(geminiResp.Candidates[0].Content.Parts) == 0 {
+        return nil, fmt.Errorf("no content in gemini response")
+    }
+
+    // The output is already guaranteed to be a JSON string thanks to response_mime_type
+    responseText := geminiResp.Candidates[0].Content.Parts[0].Text
+
+    var summary CallSummary
+    if err := json.Unmarshal([]byte(responseText), &summary); err != nil {
+        return nil, fmt.Errorf("failed to parse summary JSON: %v", err)
+    }
+
+    return &summary, nil
+}
+
 // saveSummaryToDB handles the heavy lifting of inserting into 3 different tables
 func (s *RecordingService) saveSummaryToDB(callID int, summary *CallSummary) error {
     tx, err := s.db.Begin()
