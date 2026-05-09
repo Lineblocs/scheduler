@@ -45,6 +45,8 @@ type BillingService struct {
 	rabbitmqPublisher   RabbitMQPublisher
 }
 
+var invoiceDueDateGracePeriod = 7 * 24 * time.Hour // 7 days by default
+
 type RabbitMQPublisher interface {
 	Publish(queue string, message []byte) error
 }
@@ -675,14 +677,15 @@ func (s *BillingService) createInvoice(costs *BillingCosts, data *BillingData, l
 		return 0, fmt.Errorf("duplicate invoice creation attempt")
 	}
 
-	insertStmt, err := s.db.Prepare("INSERT INTO users_invoices (`cents`, `cents_including_taxes`, `call_costs`, `recording_costs`, `fax_costs`, `membership_costs`, `number_costs`, `status`, `user_id`, `workspace_id`, `created_at`, `updated_at`, `source`, `tax_metadata`, `deduplication_key`) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	insertStmt, err := s.db.Prepare("INSERT INTO users_invoices (`cents`, `cents_including_taxes`, `call_costs`, `recording_costs`, `fax_costs`, `membership_costs`, `number_costs`, `status`, `user_id`, `workspace_id`, `created_at`, `updated_at`, `source`, `tax_metadata`, `deduplication_key`, `due_date`) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return 0, err
 	}
 	defer insertStmt.Close()
 
 	taxMetadata := utils.CreateTaxMetadata(costs.CallTollsCosts, costs.RecordingCosts, costs.FaxCosts, costs.MembershipCosts, costs.NumberRentalCosts)
-	result, err := insertStmt.Exec(costs.TotalCosts, costs.TotalCosts, costs.CallTollsCosts, costs.RecordingCosts, costs.FaxCosts, costs.MembershipCosts, costs.NumberRentalCosts, "PENDING", data.Workspace.CreatorId, data.Workspace.Id, data.Now, data.Now, "SUBSCRIPTION", taxMetadata, deduplicationKey)
+	dueDate := data.Now.Add(invoiceDueDateGracePeriod)
+	result, err := insertStmt.Exec(costs.TotalCosts, costs.TotalCosts, costs.CallTollsCosts, costs.RecordingCosts, costs.FaxCosts, costs.MembershipCosts, costs.NumberRentalCosts, "PENDING", data.Workspace.CreatorId, data.Workspace.Id, data.Now, data.Now, "SUBSCRIPTION", taxMetadata, deduplicationKey, dueDate)
 	if err != nil {
 		return 0, err
 	}
