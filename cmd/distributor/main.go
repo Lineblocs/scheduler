@@ -82,6 +82,11 @@ func main() {
 		runRecordingsDistributor()
 	})
 
+	c.AddFunc("0 0 * * *", func() {
+		log.Println("[PROD] Triggering Plan Migrations Distributor...")
+		runPlanMigrationsDistributor()
+	})
+
 	log.Printf("Scheduler started. Redis: %s", opt.Addr)
 	c.Start()
 
@@ -422,3 +427,115 @@ func runRecordingsDistributor() {
 	}
 	log.Printf("[RECORDINGS] Finished. Total Queued: %d", count)
 }
+
+func runPlanMigrationsDistributor() {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	defer cancel()
+
+	now := time.Now().UTC()
+	lockKeySuffix := now.Format("2006-01-02")
+	globalLockKey := fmt.Sprintf("plan_migrations_run_lock:%s", lockKeySuffix)
+
+	locked, err := rdb.SetNX(ctx, globalLockKey, "running", 23*time.Hour).Result()
+	if err != nil || !locked {
+		log.Printf("[MIGRATIONS] Skip: Lock %s held by another instance.", globalLockKey)
+		return
+	}
+
+	conn, err := amqp.Dial(os.Getenv("QUEUE_URL"))
+	if err != nil {
+		log.Printf("[MIGRATIONS] RabbitMQ connection failed: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	ch, err := conn.Channel()
+	if err != nil {
+		return
+	}
+	defer ch.Close()
+
+	_ = ch.Confirm(false)
+	confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 1))
+
+	query := `
+        SELECT
+            s.id, s.workspace_id, s.scheduled_plan_id
+        FROM subscriptions s
+        WHERE s.status = 'ACTIVE'
+          AND s.scheduled_plan_id IS NOT NULL
+          AND s.scheduled_effective_date IS NOT NULL
+          AND DATE(s.scheduled_effective_date) <= ?`
+
+	rows, err := db.QueryContext(ctx, query, now.Format("2006-01-02"))
+	if err != nil {
+		log.Printf("[MIGRATIONS] DB Query Error: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		var subID, workspaceID, scheduledPlanID int
+
+		if err := rows.Scan(&subID, &workspaceID, &scheduledPlanID); err != nil {
+			continue
+		}
+
+		dedupeKey := fmt.Sprintf("queued:migration:%d:%s", workspaceID, lockKeySuffix)
+		isNew, _ := rdb.SetNX(ctx, dedupeKey, "true", 24*time.Hour).Result()
+		if !isNew {
+			continue
+		}
+
+		// Update database directly initially, maybe best to move to worker for retry later
+		updateQuery := `
+			UPDATE subscriptions
+			SET current_plan_id = scheduled_plan_id, scheduled_plan_id = NULL
+			WHERE id = ?`
+		_, err = db.ExecContext(ctx, updateQuery, subID)
+		if err != nil {
+			log.Printf("[MIGRATIONS] Failed to update subscription %d: %v", subID, err)
+			rdb.Del(ctx, dedupeKey)
+			continue
+		}
+
+		// Dispatch RabbitMQ event
+		type PlanUpgradeEvent struct {
+			WorkspaceID int    `json:"workspace_id"`
+			NewPlanID   int    `json:"new_plan_id"`
+			Status      string `json:"status"`
+			Type        string `json:"type"`
+		}
+
+		event := PlanUpgradeEvent{
+			WorkspaceID: workspaceID,
+			NewPlanID:   scheduledPlanID,
+			Status:      "SUCCESS",
+			Type:        "PLAN_UPGRADE",
+		}
+
+		body, _ := json.Marshal(event)
+		err = ch.PublishWithContext(ctx, "", "workspaces", false, false, amqp.Publishing{
+			DeliveryMode: amqp.Persistent,
+			ContentType:  "application/json",
+			Body:         body,
+		})
+
+		if err != nil {
+			log.Printf("[MIGRATIONS] Publish error: %v", err)
+			continue
+		}
+
+		select {
+		case c := <-confirms:
+			if c.Ack {
+				count++
+			}
+		case <-time.After(5 * time.Second):
+			log.Printf("[MIGRATIONS] Timeout waiting for ACK on workspace %d", workspaceID)
+		}
+	}
+	log.Printf("[MIGRATIONS] Finished. Total Migrated: %d", count)
+}
+
