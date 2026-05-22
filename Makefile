@@ -6,6 +6,7 @@ BINARY_DIR=bin
 DISTRIBUTOR_BINARY=$(BINARY_DIR)/distributor
 BILLING_WORKER_BINARY=$(BINARY_DIR)/worker-billing
 RECORDINGS_WORKER_BINARY=$(BINARY_DIR)/worker-recordings
+WORKSPACE_TASKS_WORKER_BINARY=$(BINARY_DIR)/worker-workspace-tasks
 
 .PHONY: help
 help: # Show help for each of the Makefile recipes.
@@ -25,6 +26,7 @@ build: # Build both distributor and worker binaries
 	go build -o $(DISTRIBUTOR_BINARY) ./cmd/distributor/main.go
 	go build -o $(BILLING_WORKER_BINARY) ./cmd/worker-billing/main.go
 	go build -o $(RECORDINGS_WORKER_BINARY) ./cmd/worker-recordings/main.go
+	go build -o $(WORKSPACE_TASKS_WORKER_BINARY) ./cmd/worker-workspace-tasks/main.go
 	@echo "Binaries available in ./bin"
 
 .PHONY: run-distributor
