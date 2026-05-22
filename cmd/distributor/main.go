@@ -77,6 +77,13 @@ func main() {
 		})
 	}
 
+
+
+	c.AddFunc("0 0 * * *", func() {
+		log.Println("[PROD] Triggering Workspace Suspension Distributor...")
+		runWorkspaceSuspensionsDistributor()
+	})
+
 	c.AddFunc("* * * * *", func() {
 		log.Println("[PROD] Triggering Recordings Distribution...")
 		runRecordingsDistributor()
@@ -426,6 +433,100 @@ func runRecordingsDistributor() {
 		}
 	}
 	log.Printf("[RECORDINGS] Finished. Total Queued: %d", count)
+}
+
+func runWorkspaceSuspensionsDistributor() {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	defer cancel()
+
+	now := time.Now().UTC()
+	lockKeySuffix := now.Format("2006-01-02")
+	globalLockKey := fmt.Sprintf("workspace_suspensions_run_lock:%s", lockKeySuffix)
+
+	locked, err := rdb.SetNX(ctx, globalLockKey, "running", 23*time.Hour).Result()
+	if err != nil || !locked {
+		log.Printf("[SUSPENSIONS] Skip: Lock %s held by another instance.", globalLockKey)
+		return
+	}
+
+	conn, err := amqp.Dial(os.Getenv("QUEUE_URL"))
+	if err != nil {
+		log.Printf("[SUSPENSIONS] RabbitMQ connection failed: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	ch, err := conn.Channel()
+	if err != nil {
+		return
+	}
+	defer ch.Close()
+
+	_ = ch.Confirm(false)
+	confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 1))
+
+	query := `
+		SELECT
+			w.id
+		FROM workspaces w
+		JOIN invoices i ON i.workspace_id = w.id
+		WHERE i.status = 'FAILED' 
+		  AND i.due_date < ?
+		GROUP BY w.id`
+
+	rows, err := db.QueryContext(ctx, query, now.Format("2006-01-02"))
+	if err != nil {
+		log.Printf("[SUSPENSIONS] DB Query Error: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		var workspaceID int
+		if err := rows.Scan(&workspaceID); err != nil {
+			continue
+		}
+
+		dedupeKey := fmt.Sprintf("queued:suspension:%d:%s", workspaceID, lockKeySuffix)
+		isNew, _ := rdb.SetNX(ctx, dedupeKey, "true", 24*time.Hour).Result()
+		if !isNew {
+			continue
+		}
+
+		task := models.SuspensionTask{
+			WorkspaceID: workspaceID,
+			Reason:      "Failed invoice payment",
+			GracePeriodExtension: nil,
+			SuspendedAt: now,
+		}
+		body, _ := json.Marshal(task)
+
+		err = ch.PublishWithContext(ctx, "", "workspace_suspensions_tasks", false, false, amqp.Publishing{
+			DeliveryMode: amqp.Persistent,
+			ContentType:  "application/json",
+			Body:         body,
+		})
+
+		if err != nil {
+			rdb.Del(ctx, dedupeKey)
+			log.Printf("[SUSPENSIONS] Publish error: %v", err)
+			continue
+		}
+
+		select {
+		case c := <-confirms:
+			if c.Ack {
+				count++
+			} else {
+				rdb.Del(ctx, dedupeKey)
+			}
+		case <-time.After(2 * time.Second):
+			rdb.Del(ctx, dedupeKey)
+			log.Printf("[SUSPENSIONS] Timeout waiting for ACK on workspaceID %d", workspaceID)
+		}
+	}
+	log.Printf("[SUSPENSIONS] Finished. Total Queued: %d", count)
 }
 
 func runPlanMigrationsDistributor() {

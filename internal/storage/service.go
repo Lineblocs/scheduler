@@ -134,7 +134,8 @@ func (s *RecordingService) ProcessRecording(task models.RecordingTask) error {
 
 func (s *RecordingService) processAISummary(task models.RecordingTask) error {
 	fmt.Printf("Generating AI summary for Recording ID: %d\n", task.ID)
-	summary, err := s.generateAISummary(task.ID, data)
+    var rawwavdata []byte
+	summary, err := s.generateAISummary(task.ID, rawwavdata)
 	if err != nil {
 		fmt.Printf("Failed to generate AI summary for Recording ID: %d, error: %v\n", task.ID, err)
 	} else {
@@ -143,6 +144,8 @@ func (s *RecordingService) processAISummary(task models.RecordingTask) error {
 			fmt.Printf("Failed to save summary to database: %v\n", err)
 		}
 	}
+
+    return nil
 }
 
 func (s *RecordingService) generateAISummary(callid int, rawwavdata []byte) (*CallSummary, error) {

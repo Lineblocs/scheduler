@@ -118,3 +118,14 @@ type PaymentReceiptTask struct {
     PaymentAmount  float64 `json:"payment_amount"`
     Timestamp      int64   `json:"timestamp"`
 }
+
+type SuspensionTask struct {
+    ID                   int64     `json:"id"`
+    WorkspaceID          int       `json:"workspace_id"`
+    SuspendedAt          time.Time `json:"suspended_at"`
+    GracePeriodExtension *int      `json:"grace_period_extension"`
+    Reason               string    `json:"reason"`
+    Status               bool      `json:"status"`
+}
+
+
