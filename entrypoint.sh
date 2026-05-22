@@ -11,6 +11,9 @@ elif [ "$RUN_AS" = "worker-recordings" ]; then
 elif [ "$RUN_AS" = "worker-billing" ]; then
   echo "Starting worker-billing..."
   ./bin/worker-billing
+elif [ "$RUN_AS" = "worker-workspace-tasks" ]; then
+  echo "Starting worker-workspace-tasks..."
+  ./bin/worker-workspace-tasks
 else
     echo "Invalid RUN_AS value: $RUN_AS. Please set it to 'distributor', 'worker-recordings', or 'worker-billing'."
     exit 1
