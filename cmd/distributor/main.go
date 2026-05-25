@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	"strconv"
 
 	helpers "github.com/Lineblocs/go-helpers"
 	"lineblocs.com/scheduler/models"
@@ -23,8 +24,9 @@ import (
 
 // Global variables shared across goroutines
 var (
-	rdb *redis.Client
-	db  *sql.DB
+	rdb             *redis.Client
+	db              *sql.DB
+	customizations *helpers.CustomizationSettingsKV
 )
 
 func main() {
@@ -49,9 +51,10 @@ func main() {
 		log.Fatalf("Critical: Database connection failed: %v", err)
 	}
 
-	customizations, err := helpers.GetCustomizationKVs()
-	if err != nil {
-		log.Fatalf("Critical: Could not load customizations: %v", err)
+	var err2 error
+	customizations, err2 = helpers.GetCustomizationKVs()
+	if err2 != nil {
+		log.Fatalf("Critical: Could not load customizations: %v", err2)
 	}
 
 	billingFlow := utils.GetBillingFlow(customizations)
@@ -494,10 +497,20 @@ func runWorkspaceSuspensionsDistributor() {
 			continue
 		}
 
+		gracePeriodStr := utils.GetGracePeriod(customizations)
+		var gracePeriod *int
+		if gracePeriodStr != "" {
+			val, err := strconv.Atoi(gracePeriodStr)
+			if err == nil {
+				gracePeriod = &val
+			}
+		}
+
 		task := models.SuspensionTask{
 			WorkspaceID: workspaceID,
+			Status: 	"PENDING",
 			Reason:      "Failed invoice payment",
-			GracePeriodExtension: nil,
+			GracePeriodExtension: gracePeriod,
 			SuspendedAt: now,
 		}
 		body, _ := json.Marshal(task)

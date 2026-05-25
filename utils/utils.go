@@ -358,6 +358,19 @@ func GetBillingFlow(customizations *helpers.CustomizationSettingsKV) string {
 	return flow
 }
 
+func GetGracePeriod(customizations *helpers.CustomizationSettingsKV) string {
+	var flow string = ""
+
+	if interfacePtr, ok := customizations.Pairs["grace_period_billing_days"]; ok && interfacePtr != nil {
+		if stringStruct, ok := (*interfacePtr).(*helpers.CustomizationStringValue); ok {
+			flow = stringStruct.Value
+		}
+	}
+
+	return flow
+}
+
+
 func CalculateNextDate(now time.Time, cycle string, anchor int) time.Time {
 	if cycle == "ANNUAL" {
 		return now.AddDate(1, 0, 0)

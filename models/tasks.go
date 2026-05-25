@@ -125,7 +125,7 @@ type SuspensionTask struct {
     SuspendedAt          time.Time `json:"suspended_at"`
     GracePeriodExtension *int      `json:"grace_period_extension"`
     Reason               string    `json:"reason"`
-    Status               bool      `json:"status"`
+    Status               string     `json:"status"`
 }
 
 
