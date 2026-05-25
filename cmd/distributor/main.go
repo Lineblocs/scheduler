@@ -475,7 +475,8 @@ func runWorkspaceSuspensionsDistributor() {
 		JOIN invoices i ON i.workspace_id = w.id
 		WHERE i.status = 'FAILED' 
 		  AND i.due_date < ?
-		GROUP BY w.id`
+		GROUP BY w.id
+		ORDER BY w.id`
 
 	rows, err := db.QueryContext(ctx, query, now.Format("2006-01-02"))
 	if err != nil {
@@ -497,6 +498,21 @@ func runWorkspaceSuspensionsDistributor() {
 			continue
 		}
 
+		// Idempotency check: verify no active suspension already exists for this workspace
+		checkQuery := `
+			SELECT COUNT(*) as count
+			FROM workspaces_suspensions
+			WHERE workspace_id = ? AND invoice_id = ? AND status != 'LIFTED'`
+		var suspensionExists int
+		err := db.QueryRowContext(ctx, checkQuery, workspaceID).Scan(&suspensionExists)
+		if err != nil || suspensionExists > 0 {
+			rdb.Del(ctx, dedupeKey)
+			if err == nil {
+				log.Printf("[SUSPENSIONS] Workspace %d already has active suspension, skipping", workspaceID)
+			}
+			continue
+		}
+
 		gracePeriodStr := utils.GetGracePeriod(customizations)
 		var gracePeriod *int
 		if gracePeriodStr != "" {
@@ -505,6 +521,7 @@ func runWorkspaceSuspensionsDistributor() {
 				gracePeriod = &val
 			}
 		}
+
 
 		task := models.SuspensionTask{
 			WorkspaceID: workspaceID,
