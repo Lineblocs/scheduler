@@ -82,7 +82,7 @@ func main() {
 
 
 
-	c.AddFunc("0 0 * * *", func() {
+	c.AddFunc("0 * * * *", func() {
 		log.Println("[PROD] Triggering Workspace Suspension Distributor...")
 		runWorkspaceSuspensionsDistributor()
 	})
