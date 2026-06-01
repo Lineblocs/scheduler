@@ -501,18 +501,19 @@ func runWorkspaceSuspensionsDistributor() {
 		}
 
 		// Idempotency check: verify no active suspension already exists for this invoice
-		checkQuery := `SELECT COUNT(*) as count
+		checkQuery := `SELECT COUNT(*) as count, COALESCE(MIN(id), 0)
 			FROM workspaces_suspensions
 			WHERE invoice_id = ?`
 		var suspensionExists int
+		var suspensionID int
 		isFollowUp := false
-		err := db.QueryRowContext(ctx, checkQuery, invoiceID).Scan(&suspensionExists)
+		err := db.QueryRowContext(ctx, checkQuery, invoiceID).Scan(&suspensionExists, &suspensionID)
 		if err != nil {
 			rdb.Del(ctx, dedupeKey)
 			continue
 		}
 		if suspensionExists > 0 {
-			log.Printf("[SUSPENSIONS] Workspace %d already has active suspension, dispatching as follow-up", workspaceID)
+			log.Printf("[SUSPENSIONS] Workspace %d already has active suspension (id=%d), dispatching as follow-up", workspaceID, suspensionID)
 			isFollowUp = true
 		}
 

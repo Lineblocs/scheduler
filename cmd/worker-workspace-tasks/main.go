@@ -73,8 +73,8 @@ func main() {
 		switch {
 		// Case 1: Not a follow-up and grace period is nil - insert with SUSPENDED status
 		case !task.IsFollowUp && task.GracePeriodExtension == nil:
-			_, err := db.Exec("INSERT INTO workspaces_suspensions (workspace_id, suspension_initiated_at, grace_period_extension, reason, status) VALUES (?, ?, ?, ?, ?)",
-				task.WorkspaceID, task.SuspensionInitiatedAt, task.GracePeriodExtension, task.Reason, "SUSPENDED")
+			_, err := db.Exec("INSERT INTO workspaces_suspensions (workspace_id, suspension_initiated_at, grace_period_extension, reason, status, suspended_at) VALUES (?, ?, ?, ?, ?, ?)",
+				task.WorkspaceID, task.SuspensionInitiatedAt, task.GracePeriodExtension, task.Reason, "SUSPENDED", now)
 			if err != nil {
 				log.Printf("Error inserting into workspaces_suspensions: %v", err)
 			}
@@ -87,8 +87,8 @@ func main() {
 
 		// Case 2: Is a follow-up and grace period has expired - suspend the workspace
 		case task.IsFollowUp && (task.GracePeriodExtension == nil || daysSinceSuspension > float64(*task.GracePeriodExtension)):
-			_, err := db.Exec("UPDATE workspaces_suspensions SET status = 'SUSPENDED', suspended_at = ? WHERE workspace_id = ?",
-				now, task.WorkspaceID)
+			_, err := db.Exec("UPDATE workspaces_suspensions SET status = 'SUSPENDED', suspended_at = ? WHERE id = ?",
+				now, task.ID)
 			if err != nil {
 				log.Printf("Error updating workspaces_suspensions to SUSPENDED: %v", err)
 			}
