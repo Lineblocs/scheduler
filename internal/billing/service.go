@@ -47,6 +47,8 @@ type BillingService struct {
 
 var invoiceDueDateGracePeriod = 7 * 24 * time.Hour // 7 days by default
 
+const failedChargeDescription = "failed to charge payment card on file"
+
 type RabbitMQPublisher interface {
 	Publish(queue string, message []byte) error
 }
@@ -85,7 +87,7 @@ func (s *BillingService) isOverageEnabled() bool {
 
 // --- RABBITMQ PUBLISHERS ---
 
-func (s *BillingService) publishFailedPayment(task models.BillingTask, reason string, logger *logrus.Entry) error {
+func (s *BillingService) publishFailedPayment(task models.BillingTask, reason string, paymentType string, cardLast4 string, cardBrand string, logger *logrus.Entry) error {
 	if s.rabbitmqPublisher == nil {
 		return fmt.Errorf("rabbitmq publisher not initialized")
 	}
@@ -96,6 +98,9 @@ func (s *BillingService) publishFailedPayment(task models.BillingTask, reason st
 		SubscriptionID: task.SubscriptionID,
 		CreatorID:      task.CreatorID,
 		Reason:         reason,
+		PaymentType:    paymentType,
+		CardLast4:      cardLast4,
+		CardBrand:      cardBrand,
 	}
 
 	messageBytes, err := json.Marshal(failedTask)
@@ -221,7 +226,6 @@ func (s *BillingService) ProcessTask(task models.BillingTask) error {
 	}
 
 	if err != nil {
-		_ = s.publishFailedPayment(task, err.Error(), logger)
 		return err
 	}
 
@@ -435,9 +439,15 @@ func (s *BillingService) chargeWithCard(invoiceID int64, costs *BillingCosts, da
 
 	chargeResult, err := s.paymentRepository.ChargeCustomer(data.BillingParams.(*utils.BillingParams), data.User, data.Workspace, &invoice)
 	if err != nil {
-		logger.WithError(err).Error("error charging user")
-		_ = s.publishFailedPayment(task, err.Error(), logger)
-		_ = s.markInvoiceChargeFailed(invoiceID, logger)
+		logger.WithError(err).Error(failedChargeDescription)
+
+		if err := s.publishFailedPayment(task, failedChargeDescription, "CARD", task.CardLast4, task.CardBrand, logger); err != nil {
+			logger.WithError(err).Error("could not publish failed payment")
+		}
+		if err := s.markInvoiceChargeFailed(invoiceID, logger); err != nil {
+		logger.WithError(err).Error("could not mark invoice charge as failed")
+			return err
+		}
 		return err
 	}
 

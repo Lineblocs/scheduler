@@ -76,8 +76,8 @@ type BillingTask struct {
     ProviderSubscriptionID string    `json:"provider_subscription_id"`
     InvoiceID              string    `json:"invoice_id"`
     PaymentMethodID        string    `json:"payment_method_id"`
-    CardLast4          string  `json:"card_last_4"`
-	CardBrand          string  `json:"card_brand"`
+    CardLast4      string `json:"card_last_4"`
+	CardBrand      string`json:"card_brand"`
     
     // Amount is used when Action is ActionImmediate. 
     // If Action is ActionRenewal, the worker should use the PlanToBill price.
@@ -106,6 +106,9 @@ type FailedBillingTask struct {
     SubscriptionID int    `json:"subscription_id"`
     CreatorID      int    `json:"creator_id"`
     Reason         string `json:"reason"`
+    PaymentType    string `json:"payment_type"`
+    CardLast4      string `json:"card_last_4"`
+    CardBrand      string `json:"card_brand"`
 }
 
 type PaymentReceiptTask struct {
