@@ -470,12 +470,13 @@ func runWorkspaceSuspensionsDistributor() {
 
 	query := `
 		SELECT
-			w.id
+			w.id,
+			i.id
 		FROM workspaces w
-		JOIN invoices i ON i.workspace_id = w.id
+		JOIN users_invoices i ON i.workspace_id = w.id
 		WHERE i.status = 'FAILED' 
-		  AND i.due_date < ?
-		GROUP BY w.id
+		  AND i.due_date <= ?
+		GROUP BY w.id, i.id
 		ORDER BY w.id`
 
 	rows, err := db.QueryContext(ctx, query, now.Format("2006-01-02"))
@@ -488,7 +489,8 @@ func runWorkspaceSuspensionsDistributor() {
 	count := 0
 	for rows.Next() {
 		var workspaceID int
-		if err := rows.Scan(&workspaceID); err != nil {
+		var invoiceID int
+		if err := rows.Scan(&workspaceID, &invoiceID); err != nil {
 			continue
 		}
 
@@ -498,19 +500,20 @@ func runWorkspaceSuspensionsDistributor() {
 			continue
 		}
 
-		// Idempotency check: verify no active suspension already exists for this workspace
-		checkQuery := `
-			SELECT COUNT(*) as count
+		// Idempotency check: verify no active suspension already exists for this invoice
+		checkQuery := `SELECT COUNT(*) as count
 			FROM workspaces_suspensions
-			WHERE workspace_id = ? AND invoice_id = ? AND status != 'LIFTED'`
+			WHERE invoice_id = ?`
 		var suspensionExists int
-		err := db.QueryRowContext(ctx, checkQuery, workspaceID).Scan(&suspensionExists)
-		if err != nil || suspensionExists > 0 {
+		isFollowUp := false
+		err := db.QueryRowContext(ctx, checkQuery, invoiceID).Scan(&suspensionExists)
+		if err != nil {
 			rdb.Del(ctx, dedupeKey)
-			if err == nil {
-				log.Printf("[SUSPENSIONS] Workspace %d already has active suspension, skipping", workspaceID)
-			}
 			continue
+		}
+		if suspensionExists > 0 {
+			log.Printf("[SUSPENSIONS] Workspace %d already has active suspension, dispatching as follow-up", workspaceID)
+			isFollowUp = true
 		}
 
 		gracePeriodStr := utils.GetGracePeriod(customizations)
@@ -528,7 +531,8 @@ func runWorkspaceSuspensionsDistributor() {
 			Status: 	"PENDING",
 			Reason:      "Failed invoice payment",
 			GracePeriodExtension: gracePeriod,
-			SuspendedAt: now,
+			SuspensionInitiatedAt: now,
+			IsFollowUp: isFollowUp,
 		}
 		body, _ := json.Marshal(task)
 

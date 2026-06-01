@@ -122,10 +122,11 @@ type PaymentReceiptTask struct {
 type SuspensionTask struct {
     ID                   int64     `json:"id"`
     WorkspaceID          int       `json:"workspace_id"`
-    SuspendedAt          time.Time `json:"suspended_at"`
+    SuspensionInitiatedAt          time.Time `json:"suspension_initiated_at"`
     GracePeriodExtension *int      `json:"grace_period_extension"`
     Reason               string    `json:"reason"`
     Status               string     `json:"status"`
+    IsFollowUp           bool      `json:"is_follow_up"`
 }
 
 
