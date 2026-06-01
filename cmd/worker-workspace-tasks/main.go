@@ -78,7 +78,12 @@ func main() {
 			if err != nil {
 				log.Printf("Error inserting into workspaces_suspensions: %v", err)
 			}
+			if err := publishWorkspaceSuspended(ch, task); err != nil {
+				log.Printf("Error publishing workspace suspended: %v", err)
+			}
 			log.Println("Workspace suspension record created with SUSPENDED status")
+
+
 
 		// Case 2: Is a follow-up and grace period has expired - suspend the workspace
 		case task.IsFollowUp && (task.GracePeriodExtension == nil || daysSinceSuspension > float64(*task.GracePeriodExtension)):
@@ -87,21 +92,8 @@ func main() {
 			if err != nil {
 				log.Printf("Error updating workspaces_suspensions to SUSPENDED: %v", err)
 			}
-			body, err := json.Marshal(task)
-			if err == nil {
-				err = ch.Publish(
-					"",
-					"workspace_suspended",
-					false,
-					false,
-					amqp.Publishing{
-						ContentType: "application/json",
-						Body:        body,
-					},
-				)
-				if err != nil {
-					log.Printf("Error publishing to workspace_suspended: %v", err)
-				}
+			if err := publishWorkspaceSuspended(ch, task); err != nil {
+				log.Printf("Error publishing workspace suspended: %v", err)
 			}
 			log.Println("Workspace suspension status updated to SUSPENDED")
 

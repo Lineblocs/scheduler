@@ -104,7 +104,7 @@ func (s *BillingService) publishFailedPayment(task models.BillingTask, reason st
 		return err
 	}
 
-	err = s.rabbitmqPublisher.Publish("failed_payments", messageBytes)
+	err = s.rabbitmqPublisher.Publish("payment_failures", messageBytes)
 	if err != nil {
 		logger.WithError(err).Error("error publishing failed payment event")
 		return err
