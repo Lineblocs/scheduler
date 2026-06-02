@@ -303,13 +303,31 @@ func (s *BillingService) processSettleInvoice(task models.BillingTask, logger *l
 	return s.chargeInvoice(invoiceID, costs, billingData, task, logger)
 }
 
+func (s *BillingService) getSubscriptionData(subscriptionID int64, logger *logrus.Entry) (string, error) {
+	var billingType string
+	err := s.db.QueryRow("SELECT billing_type FROM subscriptions WHERE id = ?", subscriptionID).Scan(&billingType)
+	if err != nil {
+		logger.WithError(err).Error("error retrieving subscription data")
+		return "", err
+	}
+	return billingType, nil
+}
+
 func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger *logrus.Entry) error {
 	logger.Infof("Processing plan upgrade for workspace %d", task.WorkspaceID)
+
+	// Get billing type from subscription record using helper function
+	billingType, err := s.getSubscriptionData(task.SubscriptionID, logger)
+	if err != nil {
+		logger.WithError(err).Error("error retrieving billing type from subscription")
+		return err
+	}
 
 	// Create billing task for loading billing data
 	billingTask := models.BillingTask{
 		WorkspaceID:    task.WorkspaceID,
-		BillingType:    "MONTHLY", // Default, can be adjusted as needed
+		SubscriptionID: task.SubscriptionID,
+		BillingType:    billingType,
 	}
 	billingData, err := s.loadBillingData(billingTask, billingTask.BillingType, logger)
 	if err != nil {
@@ -317,8 +335,8 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 	}
 
 	// Create invoice with upgrade fee
-	upgradeFeeInCents := int64(task.UpgradeFee * 100)
-	
+	upgradeFeeInCents := task.UpgradeFee
+
 	deduplicationKey := helpers.GenerateDeduplicationKey("UPGRADE", time.Now().Year(), int(time.Now().Month()), time.Now().Day(), task.WorkspaceID, 0)
 	var count int
 	err = s.db.QueryRow("SELECT COUNT(*) FROM users_invoices WHERE deduplication_key = ?", deduplicationKey).Scan(&count)
@@ -366,14 +384,56 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 
 	logger.Infof("Created upgrade invoice %d with fee %d cents for workspace %d", invoiceID, upgradeFeeInCents, task.WorkspaceID)
 
-	// Charge the upgrade fee
+	// Charge the upgrade fee first
 	costs := &BillingCosts{
 		MembershipCosts: upgradeFeeInCents,
 		TotalCosts:      upgradeFeeInCents,
 		InvoiceDesc:     fmt.Sprintf("Plan upgrade fee: %s", upgradeName),
 	}
 
-	return s.chargeInvoice(invoiceID, costs, billingData, task, logger)
+	err = s.chargeInvoice(invoiceID, costs, billingData, billingTask, logger)
+	if err != nil {
+		return err
+	}
+
+	// Clean up upgrade metadata upon successful billing in a transaction
+	scheduledEffectiveDate, err := time.Parse("2006-01-02", task.ScheduledEffectiveDate)
+	if err != nil {
+		logger.WithError(err).Errorf("critical: could not parse ScheduledEffectiveDate %s from task", task.ScheduledEffectiveDate)
+		return err
+	}
+
+	// Begin transaction
+	tx, err := s.db.Begin()
+	if err != nil {
+		logger.WithError(err).Error("failed to begin transaction")
+		return err
+	}
+
+	_, err = tx.Exec(`
+        UPDATE subscriptions 
+        SET current_plan_id = ?,
+            scheduled_plan_id = NULL,
+            scheduled_effective_date = NULL,
+            last_billed_at = NOW(),
+            updated_at = NOW() 
+        WHERE workspace_id = ?`, task.ScheduledPlan, task.WorkspaceID)
+
+	if err != nil {
+		tx.Rollback()
+		logger.WithError(err).Error("failed to update subscription plan")
+		return err
+	}
+
+	// Commit transaction
+	err = tx.Commit()
+	if err != nil {
+		logger.WithError(err).Error("failed to commit transaction")
+		return err
+	}
+
+	logger.Infof("Subscription plan updated to %d for workspace %d (effective: %s)", task.ScheduledPlan, task.WorkspaceID, task.ScheduledEffectiveDate)
+	return nil
 }
 
 func (s *BillingService) updateSubscriptionAnchor(task models.BillingTask, logger *logrus.Entry) error {

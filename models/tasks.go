@@ -138,6 +138,7 @@ type WorkspaceUpgradeTask struct {
     UpgradeFee            int       `json:"upgrade_fee"`
     CurrentPlan            int       `json:"current_plan"`
     ScheduledPlan            int       `json:"scheduled_plan"`
+    ScheduledEffectiveDate string    `json:"scheduled_effective_date"`
 }
 
 

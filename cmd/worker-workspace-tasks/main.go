@@ -114,8 +114,48 @@ func processWorkspaceUpgrades(db interface{}, ch *amqp.Channel) {
 			continue
 		}
 
-		// TODO: Process workspace upgrade task
+		now := time.Now()
+
+		// Create proration invoice line item if proration amount > 0
+		if task.UpgradeFee > 0 {
+			_, err := db.(*interface{}).Exec(
+				"INSERT INTO user_invoice_line_items (created_at, updated_at, is_recurring, name, cents, invoice_id, workspace_id, key_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				now, now, 0, "Upgrade Adjustment: "+task.OldPlanName+" to "+task.NewPlanName, task.UpgradeFee, nil, task.WorkspaceID, "plan_upgrade_proration",
+			)
+			if err != nil {
+				log.Printf("Error creating invoice line item: %v", err)
+			}
+		}
+
+		// Update subscription with new plan details
+		_, err := db.(*interface{}).Exec(
+			"UPDATE workspace_subscriptions SET scheduled_plan_id = ?, scheduled_effective_date = ?, updated_at = ? WHERE workspace_id = ?",
+			task.NewPlanID, task.ScheduledEffectiveDate, now, task.WorkspaceID,
+		)
+		if err != nil {
+			log.Printf("Error updating workspace subscription: %v", err)
+		}
+
+		// End current plan usage period
+		_, err = db.(*interface{}).Exec(
+			"UPDATE plan_usage_periods SET ended_at = ? WHERE workspace_id = ? AND ended_at IS NULL",
+			now, task.WorkspaceID,
+		)
+		if err != nil {
+			log.Printf("Error ending plan usage period: %v", err)
+		}
+
+		// Create new plan usage period
+		_, err = db.(*interface{}).Exec(
+			"INSERT INTO plan_usage_periods (workspace_id, started_at, plan) VALUES (?, ?, ?)",
+			task.WorkspaceID, now, task.PlanKey,
+		)
+		if err != nil {
+			log.Printf("Error creating new plan usage period: %v", err)
+		}
+
 		log.Printf("Processing workspace upgrade for workspace_id: %v", task.WorkspaceID)
+
 
 		d.Ack(true)
 		log.Println("Workspace upgrade processed")
