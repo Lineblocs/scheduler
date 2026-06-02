@@ -12,6 +12,7 @@ import (
 
 const (
 	suspensionQueueName = "workspace_suspensions_tasks"
+	upgradeQueueName    = "workspace_upgrades"
 )
 
 func publishWorkspaceSuspended(ch *amqp.Channel, task models.SuspensionTask) error {
@@ -32,7 +33,94 @@ func publishWorkspaceSuspended(ch *amqp.Channel, task models.SuspensionTask) err
 	return err
 }
 
+func processSuspensions(db interface{}, ch *amqp.Channel) {
+	// Ensure queue exists
+	q, err := ch.QueueDeclare(suspensionQueueName, true, false, false, false, nil)
+	if err != nil {
+		panic(err)
+	}
 
+	msgs, _ := ch.Consume(q.Name, "", false, false, false, false, nil)
+
+	log.Println("Workspace suspensions consumer started...")
+
+	for d := range msgs {
+		var task models.SuspensionTask
+		if err := json.Unmarshal(d.Body, &task); err != nil {
+			log.Printf("Error decoding task: %v", err)
+			d.Ack(false) // Drop malformed messages
+			continue
+		}
+
+		now := time.Now()
+		daysSinceSuspension := now.Sub(task.SuspensionInitiatedAt).Hours() / 24
+
+		switch {
+		// Case 1: Not a follow-up and grace period is nil - insert with SUSPENDED status
+		case !task.IsFollowUp && task.GracePeriodExtension == nil:
+			_, err := db.(*interface{}).Exec("INSERT INTO workspaces_suspensions (workspace_id, suspension_initiated_at, grace_period_extension, reason, status, suspended_at) VALUES (?, ?, ?, ?, ?, ?)",
+				task.WorkspaceID, task.SuspensionInitiatedAt, task.GracePeriodExtension, task.Reason, "SUSPENDED", now)
+			if err != nil {
+				log.Printf("Error inserting into workspaces_suspensions: %v", err)
+			}
+			if err := publishWorkspaceSuspended(ch, task); err != nil {
+				log.Printf("Error publishing workspace suspended: %v", err)
+			}
+			log.Println("Workspace suspension record created with SUSPENDED status")
+
+		// Case 2: Is a follow-up and grace period has expired - suspend the workspace
+		case task.IsFollowUp && (task.GracePeriodExtension == nil || daysSinceSuspension > float64(*task.GracePeriodExtension)):
+			_, err := db.(*interface{}).Exec("UPDATE workspaces_suspensions SET status = 'SUSPENDED', suspended_at = ? WHERE id = ?",
+				now, task.ID)
+			if err != nil {
+				log.Printf("Error updating workspaces_suspensions to SUSPENDED: %v", err)
+			}
+			if err := publishWorkspaceSuspended(ch, task); err != nil {
+				log.Printf("Error publishing workspace suspended: %v", err)
+			}
+			log.Println("Workspace suspension status updated to SUSPENDED")
+
+		// Case 3: Default - add suspension record with all fields
+		default:
+			_, err := db.(*interface{}).Exec("INSERT INTO workspaces_suspensions (workspace_id, suspension_initiated_at, grace_period_extension, reason, status) VALUES (?, ?, ?, ?, ?)",
+				task.WorkspaceID, task.SuspensionInitiatedAt, task.GracePeriodExtension, task.Reason, task.Status)
+			if err != nil {
+				log.Printf("Error inserting into workspaces_suspensions: %v", err)
+			}
+			log.Println("Workspace suspension record created")
+		}
+
+		d.Ack(true)
+		log.Println("Workspace suspension initiated")
+	}
+}
+
+func processWorkspaceUpgrades(db interface{}, ch *amqp.Channel) {
+	// Ensure queue exists
+	q, err := ch.QueueDeclare(upgradeQueueName, true, false, false, false, nil)
+	if err != nil {
+		panic(err)
+	}
+
+	msgs, _ := ch.Consume(q.Name, "", false, false, false, false, nil)
+
+	log.Println("Workspace upgrades consumer started...")
+
+	for d := range msgs {
+		var task models.WorkspaceUpgradeTask
+		if err := json.Unmarshal(d.Body, &task); err != nil {
+			log.Printf("Error decoding upgrade task: %v", err)
+			d.Ack(false) // Drop malformed messages
+			continue
+		}
+
+		// TODO: Process workspace upgrade task
+		log.Printf("Processing workspace upgrade for workspace_id: %v", task.WorkspaceID)
+
+		d.Ack(true)
+		log.Println("Workspace upgrade processed")
+	}
+}
 
 func main() {
 	db, _ := utils.GetDBConnection()
@@ -47,70 +135,13 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	
-	// Ensure queue exists
-	q, err := ch.QueueDeclare(suspensionQueueName, true, false, false, false, nil)
-	if err != nil {
-		panic(err)
-	}
-
-	msgs, _ := ch.Consume(q.Name, "", false, false, false, false, nil)
 
 	log.Println("Workspace tasks worker started...")
 
-	for d := range msgs {
-		var task models.SuspensionTask
-		if err := json.Unmarshal(d.Body, &task); err != nil {
-			log.Printf("Error decoding task: %v", err)
-			d.Ack(false) // Drop malformed messages
-			continue
-		}
+	// Start consumers in goroutines
+	go processSuspensions(db, ch)
+	go processWorkspaceUpgrades(db, ch)
 
-
-		now := time.Now()
-		daysSinceSuspension := now.Sub(task.SuspensionInitiatedAt).Hours() / 24
-
-		switch {
-		// Case 1: Not a follow-up and grace period is nil - insert with SUSPENDED status
-		case !task.IsFollowUp && task.GracePeriodExtension == nil:
-			_, err := db.Exec("INSERT INTO workspaces_suspensions (workspace_id, suspension_initiated_at, grace_period_extension, reason, status, suspended_at) VALUES (?, ?, ?, ?, ?, ?)",
-				task.WorkspaceID, task.SuspensionInitiatedAt, task.GracePeriodExtension, task.Reason, "SUSPENDED", now)
-			if err != nil {
-				log.Printf("Error inserting into workspaces_suspensions: %v", err)
-			}
-			if err := publishWorkspaceSuspended(ch, task); err != nil {
-				log.Printf("Error publishing workspace suspended: %v", err)
-			}
-			log.Println("Workspace suspension record created with SUSPENDED status")
-
-
-
-		// Case 2: Is a follow-up and grace period has expired - suspend the workspace
-		case task.IsFollowUp && (task.GracePeriodExtension == nil || daysSinceSuspension > float64(*task.GracePeriodExtension)):
-			_, err := db.Exec("UPDATE workspaces_suspensions SET status = 'SUSPENDED', suspended_at = ? WHERE id = ?",
-				now, task.ID)
-			if err != nil {
-				log.Printf("Error updating workspaces_suspensions to SUSPENDED: %v", err)
-			}
-			if err := publishWorkspaceSuspended(ch, task); err != nil {
-				log.Printf("Error publishing workspace suspended: %v", err)
-			}
-			log.Println("Workspace suspension status updated to SUSPENDED")
-
-		// Case 3: Default - add suspension record with all fields
-		default:
-			_, err := db.Exec("INSERT INTO workspaces_suspensions (workspace_id, suspension_initiated_at, grace_period_extension, reason, status) VALUES (?, ?, ?, ?, ?)",
-				task.WorkspaceID, task.SuspensionInitiatedAt, task.GracePeriodExtension, task.Reason, task.Status)
-			if err != nil {
-				log.Printf("Error inserting into workspaces_suspensions: %v", err)
-			}
-			log.Println("Workspace suspension record created")
-		}
-
-		
-
-		d.Ack(true)
-		log.Println("Workspace suspension initiated")
-
-	}
+	// Keep main running
+	select {}
 }

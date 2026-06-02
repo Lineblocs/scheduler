@@ -627,7 +627,9 @@ func runPlanMigrationsDistributor() {
 		// Update database directly initially, maybe best to move to worker for retry later
 		updateQuery := `
 			UPDATE subscriptions
-			SET current_plan_id = scheduled_plan_id, scheduled_plan_id = NULL
+			SET current_plan_id = scheduled_plan_id, 
+			scheduled_plan_id = NULL,
+			scheduled_effective_date = NULL
 			WHERE id = ?`
 		_, err = db.ExecContext(ctx, updateQuery, subID)
 		if err != nil {

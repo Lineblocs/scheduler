@@ -201,6 +201,8 @@ func (s *BillingService) publishInvoiceGenerated(task models.BillingTask, invoic
 	return nil
 }
 
+
+
 // --- CORE ROUTING (ProcessTask) ---
 
 func (s *BillingService) ProcessTask(task models.BillingTask) error {
@@ -296,6 +298,79 @@ func (s *BillingService) processSettleInvoice(task models.BillingTask, logger *l
 	costs = &BillingCosts{
 		TotalCosts:  totalCents,
 		InvoiceDesc: fmt.Sprintf("Settlement for invoice %d", invoiceID),
+	}
+
+	return s.chargeInvoice(invoiceID, costs, billingData, task, logger)
+}
+
+func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger *logrus.Entry) error {
+	logger.Infof("Processing plan upgrade for workspace %d", task.WorkspaceID)
+
+	// Create billing task for loading billing data
+	billingTask := models.BillingTask{
+		WorkspaceID:    task.WorkspaceID,
+		BillingType:    "MONTHLY", // Default, can be adjusted as needed
+	}
+	billingData, err := s.loadBillingData(billingTask, billingTask.BillingType, logger)
+	if err != nil {
+		return err
+	}
+
+	// Create invoice with upgrade fee
+	upgradeFeeInCents := int64(task.UpgradeFee * 100)
+	
+	deduplicationKey := helpers.GenerateDeduplicationKey("UPGRADE", time.Now().Year(), int(time.Now().Month()), time.Now().Day(), task.WorkspaceID, 0)
+	var count int
+	err = s.db.QueryRow("SELECT COUNT(*) FROM users_invoices WHERE deduplication_key = ?", deduplicationKey).Scan(&count)
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		return fmt.Errorf("duplicate upgrade invoice creation attempt")
+	}
+
+	insertStmt, err := s.db.Prepare("INSERT INTO users_invoices (`cents`, `cents_including_taxes`, `call_costs`, `recording_costs`, `fax_costs`, `membership_costs`, `number_costs`, `status`, `user_id`, `workspace_id`, `created_at`, `updated_at`, `source`, `tax_metadata`, `deduplication_key`, `due_date`, `source_service`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	if err != nil {
+		return err
+	}
+	defer insertStmt.Close()
+
+	now := time.Now()
+	dueDate := now.Add(invoiceDueDateGracePeriod)
+	sourceService := "SCHEDULER"
+	taxMetadata := ""
+
+	result, err := insertStmt.Exec(upgradeFeeInCents, upgradeFeeInCents, 0, 0, 0, upgradeFeeInCents, 0, "PENDING", billingData.Workspace.CreatorId, billingData.Workspace.Id, now, now, "UPGRADE", taxMetadata, deduplicationKey, dueDate, sourceService)
+	if err != nil {
+		return err
+	}
+
+	invoiceID, err := result.LastInsertId()
+	if err != nil {
+		return err
+	}
+
+	// Create line item for upgrade proration
+	lineItemStmt, err := s.db.Prepare("INSERT INTO users_invoices_line_items (`name`, `cents`, `invoice_id`, `workspace_id`, `key_name`, `is_recurring`, `created_at`, `updated_at`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+	if err != nil {
+		return err
+	}
+	defer lineItemStmt.Close()
+
+	upgradeName := fmt.Sprintf("Plan upgrade: %d to %d", task.CurrentPlan, task.ScheduledPlan)
+	_, err = lineItemStmt.Exec(upgradeName, upgradeFeeInCents, invoiceID, billingData.Workspace.Id, "plan_upgrade_proration", 0, now, now)
+	if err != nil {
+		logger.WithError(err).Error("error creating upgrade line item")
+		return err
+	}
+
+	logger.Infof("Created upgrade invoice %d with fee %d cents for workspace %d", invoiceID, upgradeFeeInCents, task.WorkspaceID)
+
+	// Charge the upgrade fee
+	costs := &BillingCosts{
+		MembershipCosts: upgradeFeeInCents,
+		TotalCosts:      upgradeFeeInCents,
+		InvoiceDesc:     fmt.Sprintf("Plan upgrade fee: %s", upgradeName),
 	}
 
 	return s.chargeInvoice(invoiceID, costs, billingData, task, logger)
