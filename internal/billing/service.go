@@ -317,7 +317,7 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 	logger.Infof("Processing plan upgrade for workspace %d", task.WorkspaceID)
 
 	// Get billing type from subscription record using helper function
-	billingType, err := s.getSubscriptionData(task.SubscriptionID, logger)
+	billingType, err := s.getSubscriptionData(int64(task.SubscriptionID), logger)
 	if err != nil {
 		logger.WithError(err).Error("error retrieving billing type from subscription")
 		return err
@@ -386,8 +386,8 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 
 	// Charge the upgrade fee first
 	costs := &BillingCosts{
-		MembershipCosts: upgradeFeeInCents,
-		TotalCosts:      upgradeFeeInCents,
+		MembershipCosts: int64(upgradeFeeInCents),
+		TotalCosts:      int64(upgradeFeeInCents),
 		InvoiceDesc:     fmt.Sprintf("Plan upgrade fee: %s", upgradeName),
 	}
 
@@ -397,8 +397,7 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 	}
 
 	// Clean up upgrade metadata upon successful billing in a transaction
-	scheduledEffectiveDate, err := time.Parse("2006-01-02", task.ScheduledEffectiveDate)
-	if err != nil {
+	if _, err := time.Parse("2006-01-02", task.ScheduledEffectiveDate); err != nil {
 		logger.WithError(err).Errorf("critical: could not parse ScheduledEffectiveDate %s from task", task.ScheduledEffectiveDate)
 		return err
 	}

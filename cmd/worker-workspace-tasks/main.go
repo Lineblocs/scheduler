@@ -1,12 +1,16 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"log"
 	"os"
 	"time"
+	"lineblocs.com/scheduler/internal/billing"
 	"lineblocs.com/scheduler/models"
+	"lineblocs.com/scheduler/repository"
 	"lineblocs.com/scheduler/utils"
+	"github.com/sirupsen/logrus"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -33,7 +37,7 @@ func publishWorkspaceSuspended(ch *amqp.Channel, task models.SuspensionTask) err
 	return err
 }
 
-func processSuspensions(db interface{}, ch *amqp.Channel) {
+func processSuspensions(db *sql.DB, ch *amqp.Channel) {
 	// Ensure queue exists
 	q, err := ch.QueueDeclare(suspensionQueueName, true, false, false, false, nil)
 	if err != nil {
@@ -58,7 +62,7 @@ func processSuspensions(db interface{}, ch *amqp.Channel) {
 		switch {
 		// Case 1: Not a follow-up and grace period is nil - insert with SUSPENDED status
 		case !task.IsFollowUp && task.GracePeriodExtension == nil:
-			_, err := db.(*interface{}).Exec("INSERT INTO workspaces_suspensions (workspace_id, suspension_initiated_at, grace_period_extension, reason, status, suspended_at) VALUES (?, ?, ?, ?, ?, ?)",
+			_, err := db.Exec("INSERT INTO workspaces_suspensions (workspace_id, suspension_initiated_at, grace_period_extension, reason, status, suspended_at) VALUES (?, ?, ?, ?, ?, ?)",
 				task.WorkspaceID, task.SuspensionInitiatedAt, task.GracePeriodExtension, task.Reason, "SUSPENDED", now)
 			if err != nil {
 				log.Printf("Error inserting into workspaces_suspensions: %v", err)
@@ -70,7 +74,7 @@ func processSuspensions(db interface{}, ch *amqp.Channel) {
 
 		// Case 2: Is a follow-up and grace period has expired - suspend the workspace
 		case task.IsFollowUp && (task.GracePeriodExtension == nil || daysSinceSuspension > float64(*task.GracePeriodExtension)):
-			_, err := db.(*interface{}).Exec("UPDATE workspaces_suspensions SET status = 'SUSPENDED', suspended_at = ? WHERE id = ?",
+			_, err := db.Exec("UPDATE workspaces_suspensions SET status = 'SUSPENDED', suspended_at = ? WHERE id = ?",
 				now, task.ID)
 			if err != nil {
 				log.Printf("Error updating workspaces_suspensions to SUSPENDED: %v", err)
@@ -82,7 +86,7 @@ func processSuspensions(db interface{}, ch *amqp.Channel) {
 
 		// Case 3: Default - add suspension record with all fields
 		default:
-			_, err := db.(*interface{}).Exec("INSERT INTO workspaces_suspensions (workspace_id, suspension_initiated_at, grace_period_extension, reason, status) VALUES (?, ?, ?, ?, ?)",
+			_, err := db.Exec("INSERT INTO workspaces_suspensions (workspace_id, suspension_initiated_at, grace_period_extension, reason, status) VALUES (?, ?, ?, ?, ?)",
 				task.WorkspaceID, task.SuspensionInitiatedAt, task.GracePeriodExtension, task.Reason, task.Status)
 			if err != nil {
 				log.Printf("Error inserting into workspaces_suspensions: %v", err)
@@ -95,7 +99,7 @@ func processSuspensions(db interface{}, ch *amqp.Channel) {
 	}
 }
 
-func processWorkspaceUpgrades(db interface{}, ch *amqp.Channel) {
+func processWorkspaceUpgrades(db *sql.DB, ch *amqp.Channel) {
 	// Ensure queue exists
 	q, err := ch.QueueDeclare(upgradeQueueName, true, false, false, false, nil)
 	if err != nil {
@@ -106,6 +110,10 @@ func processWorkspaceUpgrades(db interface{}, ch *amqp.Channel) {
 
 	log.Println("Workspace upgrades consumer started...")
 
+	wRepo := repository.NewWorkspaceRepository(db)
+	pRepo := repository.NewPaymentRepository(db)
+	svc := billing.NewBillingService(db, wRepo, pRepo, nil)
+
 	for d := range msgs {
 		var task models.WorkspaceUpgradeTask
 		if err := json.Unmarshal(d.Body, &task); err != nil {
@@ -114,48 +122,12 @@ func processWorkspaceUpgrades(db interface{}, ch *amqp.Channel) {
 			continue
 		}
 
-		now := time.Now()
-
-		// Create proration invoice line item if proration amount > 0
-		if task.UpgradeFee > 0 {
-			_, err := db.(*interface{}).Exec(
-				"INSERT INTO user_invoice_line_items (created_at, updated_at, is_recurring, name, cents, invoice_id, workspace_id, key_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				now, now, 0, "Upgrade Adjustment: "+task.OldPlanName+" to "+task.NewPlanName, task.UpgradeFee, nil, task.WorkspaceID, "plan_upgrade_proration",
-			)
-			if err != nil {
-				log.Printf("Error creating invoice line item: %v", err)
-			}
+		logger := logrus.WithField("component", "workspace-upgrades").WithField("workspace_id", task.WorkspaceID)
+		if err := svc.HandleUpgrade(task, logger); err != nil {
+			log.Printf("Error handling workspace upgrade: %v", err)
+			d.Ack(false)
+			continue
 		}
-
-		// Update subscription with new plan details
-		_, err := db.(*interface{}).Exec(
-			"UPDATE workspace_subscriptions SET scheduled_plan_id = ?, scheduled_effective_date = ?, updated_at = ? WHERE workspace_id = ?",
-			task.NewPlanID, task.ScheduledEffectiveDate, now, task.WorkspaceID,
-		)
-		if err != nil {
-			log.Printf("Error updating workspace subscription: %v", err)
-		}
-
-		// End current plan usage period
-		_, err = db.(*interface{}).Exec(
-			"UPDATE plan_usage_periods SET ended_at = ? WHERE workspace_id = ? AND ended_at IS NULL",
-			now, task.WorkspaceID,
-		)
-		if err != nil {
-			log.Printf("Error ending plan usage period: %v", err)
-		}
-
-		// Create new plan usage period
-		_, err = db.(*interface{}).Exec(
-			"INSERT INTO plan_usage_periods (workspace_id, started_at, plan) VALUES (?, ?, ?)",
-			task.WorkspaceID, now, task.PlanKey,
-		)
-		if err != nil {
-			log.Printf("Error creating new plan usage period: %v", err)
-		}
-
-		log.Printf("Processing workspace upgrade for workspace_id: %v", task.WorkspaceID)
-
 
 		d.Ack(true)
 		log.Println("Workspace upgrade processed")
@@ -163,7 +135,10 @@ func processWorkspaceUpgrades(db interface{}, ch *amqp.Channel) {
 }
 
 func main() {
-	db, _ := utils.GetDBConnection()
+	db, err := utils.GetDBConnection()
+	if err != nil {
+		panic(err)
+	}
 	//settings, _ := utils.GetSettingsFromAPI()
 
 	conn, err := amqp.Dial(os.Getenv("QUEUE_URL"))
@@ -181,6 +156,7 @@ func main() {
 	// Start consumers in goroutines
 	go processSuspensions(db, ch)
 	go processWorkspaceUpgrades(db, ch)
+
 
 	// Keep main running
 	select {}
