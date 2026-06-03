@@ -411,12 +411,11 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 
 	_, err = tx.Exec(`
         UPDATE subscriptions 
-        SET current_plan_id = ?,
-            scheduled_plan_id = NULL,
-            scheduled_effective_date = NULL,
+        SET scheduled_plan_id = ?,
+            scheduled_effective_date = ?,
             last_billed_at = NOW(),
             updated_at = NOW() 
-        WHERE workspace_id = ?`, task.ScheduledPlan, task.WorkspaceID)
+        WHERE workspace_id = ?`, task.ScheduledPlan, task.ScheduledEffectiveDate, task.WorkspaceID)
 
 	if err != nil {
 		tx.Rollback()
