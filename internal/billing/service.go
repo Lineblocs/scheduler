@@ -304,46 +304,55 @@ func (s *BillingService) processSettleInvoice(task models.BillingTask, logger *l
 }
 
 func (s *BillingService) getSubscriptionData(subscriptionID int64, logger *logrus.Entry) (string, error) {
-	var billingType string
-	err := s.db.QueryRow("SELECT billing_type FROM subscriptions WHERE id = ?", subscriptionID).Scan(&billingType)
+	var billingCycle string
+	err := s.db.QueryRow("SELECT billing_cycle FROM subscriptions WHERE id = ?", subscriptionID).Scan(&billingCycle)
 	if err != nil {
 		logger.WithError(err).Error("error retrieving subscription data")
 		return "", err
 	}
-	return billingType, nil
+	return billingCycle, nil
 }
 
 func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger *logrus.Entry) error {
-	logger.Infof("Processing plan upgrade for workspace %d", task.WorkspaceID)
+	logger.Infof("Processing plan upgrade for workspace %d: current plan %d -> scheduled plan %d (subscription %d, effective: %s)", task.WorkspaceID, task.CurrentPlan, task.ScheduledPlan, task.SubscriptionID, task.ScheduledEffectiveDate)
 
 	// Get billing type from subscription record using helper function
-	billingType, err := s.getSubscriptionData(int64(task.SubscriptionID), logger)
+	billingCycle, err := s.getSubscriptionData(int64(task.SubscriptionID), logger)
 	if err != nil {
-		logger.WithError(err).Error("error retrieving billing type from subscription")
+		logger.WithError(err).Error("error retrieving billing cycle from subscription")
 		return err
 	}
+	logger.Infof("Retrieved billing cycle '%s' for subscription %d", billingCycle, task.SubscriptionID)
 
 	// Create billing task for loading billing data
 	billingTask := models.BillingTask{
 		WorkspaceID:    task.WorkspaceID,
+		CreatorID:    task.CreatorID,
 		SubscriptionID: task.SubscriptionID,
-		BillingType:    billingType,
+		BillingType:    billingCycle,
+		PaymentMethodID: task.PaymentMethodID,
+		CardLast4:      task.CardLast4,
+		CardBrand:      task.CardBrand,
 	}
 	billingData, err := s.loadBillingData(billingTask, billingTask.BillingType, logger)
 	if err != nil {
 		return err
 	}
+	logger.Infof("Loaded billing data for workspace %d (creator: %d)", billingData.Workspace.Id, billingData.Workspace.CreatorId)
 
 	// Create invoice with upgrade fee
 	upgradeFeeInCents := task.UpgradeFee
+	logger.Infof("Upgrade fee for workspace %d: %d cents", task.WorkspaceID, upgradeFeeInCents)
 
 	deduplicationKey := helpers.GenerateDeduplicationKey("UPGRADE", time.Now().Year(), int(time.Now().Month()), time.Now().Day(), task.WorkspaceID, 0)
+	logger.Infof("Checking deduplication key '%s' for workspace %d", deduplicationKey, task.WorkspaceID)
 	var count int
 	err = s.db.QueryRow("SELECT COUNT(*) FROM users_invoices WHERE deduplication_key = ?", deduplicationKey).Scan(&count)
 	if err != nil {
 		return err
 	}
 	if count > 0 {
+		logger.Warnf("Duplicate upgrade invoice creation attempt detected for workspace %d (deduplication_key: %s)", task.WorkspaceID, deduplicationKey)
 		return fmt.Errorf("duplicate upgrade invoice creation attempt")
 	}
 
@@ -369,18 +378,20 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 	}
 
 	// Create line item for upgrade proration
-	lineItemStmt, err := s.db.Prepare("INSERT INTO users_invoices_line_items (`name`, `cents`, `invoice_id`, `workspace_id`, `key_name`, `is_recurring`, `created_at`, `updated_at`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+	lineItemStmt, err := s.db.Prepare("INSERT INTO users_invoices_line_items (`name`, `cents`, `invoice_id`, `key_name`, `is_recurring`, `created_at`, `updated_at`) VALUES (?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return err
 	}
 	defer lineItemStmt.Close()
 
 	upgradeName := fmt.Sprintf("Plan upgrade: %d to %d", task.CurrentPlan, task.ScheduledPlan)
-	_, err = lineItemStmt.Exec(upgradeName, upgradeFeeInCents, invoiceID, billingData.Workspace.Id, "plan_upgrade_proration", 0, now, now)
+	logger.Infof("Creating line item '%s' (%d cents) for invoice %d, workspace %d", upgradeName, upgradeFeeInCents, invoiceID, billingData.Workspace.Id)
+	_, err = lineItemStmt.Exec(upgradeName, upgradeFeeInCents, invoiceID, "plan_upgrade_proration", 0, now, now)
 	if err != nil {
 		logger.WithError(err).Error("error creating upgrade line item")
 		return err
 	}
+	logger.Infof("Line item created successfully for invoice %d", invoiceID)
 
 	logger.Infof("Created upgrade invoice %d with fee %d cents for workspace %d", invoiceID, upgradeFeeInCents, task.WorkspaceID)
 
@@ -391,10 +402,33 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 		InvoiceDesc:     fmt.Sprintf("Plan upgrade fee: %s", upgradeName),
 	}
 
+	logger.Infof("Charging invoice %d for workspace %d (%d cents)", invoiceID, task.WorkspaceID, costs.TotalCosts)
 	err = s.chargeInvoice(invoiceID, costs, billingData, billingTask, logger)
 	if err != nil {
+		logger.WithError(err).Errorf("failed to charge invoice %d for workspace %d", invoiceID, task.WorkspaceID)
+
+		_, rollbackErr := s.db.Exec(`
+			UPDATE subscriptions
+			SET scheduled_plan_id = NULL,
+				scheduled_effective_date = NULL,
+				updated_at = NOW()
+			WHERE workspace_id = ?`, task.WorkspaceID)
+		if rollbackErr != nil {
+			logger.WithError(rollbackErr).Errorf("failed to rollback scheduled_plan_id and scheduled_effective_date for workspace %d", task.WorkspaceID)
+		} else {
+			logger.Infof("Rolled back scheduled_plan_id and scheduled_effective_date for workspace %d after charge failure", task.WorkspaceID)
+		}
+
+		_, deleteInvoiceErr := s.db.Exec(`DELETE FROM users_invoices WHERE id = ?`, invoiceID)
+		if deleteInvoiceErr != nil {
+			logger.WithError(deleteInvoiceErr).Errorf("failed to delete invoice %d after charge failure", invoiceID)
+		} else {
+			logger.Infof("Deleted invoice %d after charge failure for workspace %d", invoiceID, task.WorkspaceID)
+		}
+
 		return err
 	}
+	logger.Infof("Successfully charged invoice %d for workspace %d", invoiceID, task.WorkspaceID)
 
 	// Clean up upgrade metadata upon successful billing in a transaction
 	if _, err := time.Parse("2006-01-02", task.ScheduledEffectiveDate); err != nil {
@@ -409,6 +443,7 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 		return err
 	}
 
+	logger.Infof("Updating subscription for workspace %d: setting scheduled_plan_id=%d, scheduled_effective_date=%s", task.WorkspaceID, task.ScheduledPlan, task.ScheduledEffectiveDate)
 	_, err = tx.Exec(`
         UPDATE subscriptions 
         SET scheduled_plan_id = ?,
@@ -424,6 +459,7 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 	}
 
 	// Commit transaction
+	logger.Infof("Committing upgrade transaction for workspace %d", task.WorkspaceID)
 	err = tx.Commit()
 	if err != nil {
 		logger.WithError(err).Error("failed to commit transaction")

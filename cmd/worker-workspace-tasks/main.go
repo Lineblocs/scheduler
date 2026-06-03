@@ -12,6 +12,7 @@ import (
 	"lineblocs.com/scheduler/utils"
 	"github.com/sirupsen/logrus"
 	amqp "github.com/rabbitmq/amqp091-go"
+	helpers "github.com/Lineblocs/go-helpers"
 )
 
 const (
@@ -135,6 +136,9 @@ func processWorkspaceUpgrades(db *sql.DB, ch *amqp.Channel) {
 }
 
 func main() {
+	logDestination := utils.Config("LOG_DESTINATIONS")
+	helpers.InitLogrus(logDestination)
+
 	db, err := utils.GetDBConnection()
 	if err != nil {
 		panic(err)

@@ -135,8 +135,13 @@ type SuspensionTask struct {
 type WorkspaceUpgradeTask struct {
     RunID                  string    `json:"run_id"`
     WorkspaceID            int       `json:"workspace_id"`
+    CreatorID            int       `json:"creator_id"`
     SubscriptionID         int       `json:"subscription_id"`
     UpgradeFee            int       `json:"upgrade_fee"`
+    PaymentMethodID        string    `json:"payment_method_id"`
+    CardID        int    `json:"card_id"`
+    CardLast4      string `json:"card_last_4"`
+	CardBrand      string`json:"card_brand"`
     CurrentPlan            int       `json:"current_plan"`
     ScheduledPlan            int       `json:"scheduled_plan"`
     ScheduledEffectiveDate string    `json:"scheduled_effective_date"`
