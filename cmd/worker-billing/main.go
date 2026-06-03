@@ -22,17 +22,6 @@ const (
 	billingTasksQueue = "billing_tasks"
 )
 
-type RabbitMQPublisher struct {
-	channel *amqp.Channel
-}
-
-func (p *RabbitMQPublisher) Publish(queue string, message []byte) error {
-	return p.channel.Publish("", queue, false, false, amqp.Publishing{
-		ContentType: "application/json",
-		Body:        message,
-	})
-}
-
 func main() {
 	logDestination := utils.Config("LOG_DESTINATIONS")
 	helpers.InitLogrus(logDestination)
@@ -58,7 +47,7 @@ func main() {
 	}
 	defer ch.Close()
 
-	publisher := &RabbitMQPublisher{channel: ch}
+	publisher := billing.NewGenericRabbitMQPublisher(ch)
 
 	customizations, err := helpers.GetCustomizationKVs()
 	if err != nil {

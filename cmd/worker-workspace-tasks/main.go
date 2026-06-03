@@ -113,7 +113,13 @@ func processWorkspaceUpgrades(db *sql.DB, ch *amqp.Channel) {
 
 	wRepo := repository.NewWorkspaceRepository(db)
 	pRepo := repository.NewPaymentRepository(db)
-	svc := billing.NewBillingService(db, wRepo, pRepo, nil)
+
+	publisher := billing.NewGenericRabbitMQPublisher(ch)
+	customizations, err := helpers.GetCustomizationKVs()
+	if err != nil {
+		log.Printf("Warning: Could not load customizations: %v", err)
+	}
+	svc := billing.NewBillingServiceWithPublisher(db, wRepo, pRepo, customizations, publisher)
 
 	for d := range msgs {
 		var task models.WorkspaceUpgradeTask

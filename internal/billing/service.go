@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	amqp "github.com/rabbitmq/amqp091-go"
 	helpers "github.com/Lineblocs/go-helpers"
 	"github.com/sirupsen/logrus"
 	"lineblocs.com/scheduler/models"
@@ -51,6 +52,22 @@ const failedChargeDescription = "failed to charge payment card on file"
 
 type RabbitMQPublisher interface {
 	Publish(queue string, message []byte) error
+}
+
+type GenericRabbitMQPublisher struct {
+	channel *amqp.Channel
+}
+
+
+func NewGenericRabbitMQPublisher(channel *amqp.Channel) *GenericRabbitMQPublisher {
+	return &GenericRabbitMQPublisher{channel: channel}
+}
+
+func (p *GenericRabbitMQPublisher) Publish(queue string, message []byte) error {
+	return p.channel.Publish("", queue, false, false, amqp.Publishing{
+		ContentType: "application/json",
+		Body:        message,
+	})
 }
 
 func NewBillingService(db *sql.DB, wRepo repository.WorkspaceRepository, pRepo repository.PaymentRepository, customizations *helpers.CustomizationSettingsKV) *BillingService {
