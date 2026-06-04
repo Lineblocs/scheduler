@@ -147,4 +147,15 @@ type WorkspaceUpgradeTask struct {
     ScheduledEffectiveDate string    `json:"scheduled_effective_date"`
 }
 
+type WorkspaceUpgradeResultTask struct {
+	RunID          string `json:"run_id"`
+	WorkspaceID    int    `json:"workspace_id"`
+	SubscriptionID int    `json:"subscription_id"`
+	CreatorID      int    `json:"creator_id"`
+	PlanName       string `json:"plan_name"`
+	PlanID         int    `json:"plan_id"`
+	Action         string `json:"action"`
+	Timestamp      int    `json:"timestamp"`
+}
+
 

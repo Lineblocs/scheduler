@@ -104,6 +104,45 @@ func (s *BillingService) isOverageEnabled() bool {
 
 // --- RABBITMQ PUBLISHERS ---
 
+
+func (s *BillingService) publishWorkspaceUpgrade(task models.BillingTask, planName string, planID int64, action string, logger *logrus.Entry) error {
+	if s.rabbitmqPublisher == nil {
+		return fmt.Errorf("rabbitmq publisher not initialized")
+	}
+
+	if action != "SUCCESSFUL_UPGRADE" && action != "FAILED_UPGRADE" {
+		return fmt.Errorf("invalid action %q: must be SUCCESSFUL_UPGRADE or FAILED_UPGRADE", action)
+	}
+
+	planIDInt := int(planID)
+	timestamp := int(time.Now().Unix())
+	upgradeTask := models.WorkspaceUpgradeResultTask{
+		RunID:          task.RunID,
+		WorkspaceID:    task.WorkspaceID,
+		SubscriptionID: task.SubscriptionID,
+		CreatorID:      task.CreatorID,
+		PlanName:       planName,
+		PlanID:         planIDInt,
+		Action:         action,
+		Timestamp:      timestamp,
+	}
+
+	messageBytes, err := json.Marshal(upgradeTask)
+	if err != nil {
+		logger.WithError(err).Error("error marshaling workspace upgrade task")
+		return err
+	}
+
+	err = s.rabbitmqPublisher.Publish("workspace_upgrades", messageBytes)
+	if err != nil {
+		logger.WithError(err).Error("error publishing workspace upgrade event")
+		return err
+	}
+
+	logger.Infof("Published workspace upgrade event for workspace %d, subscription %d", task.WorkspaceID, task.SubscriptionID)
+	return nil
+}
+
 func (s *BillingService) publishFailedPayment(task models.BillingTask, reason string, paymentType string, cardLast4 string, cardBrand string, logger *logrus.Entry) error {
 	if s.rabbitmqPublisher == nil {
 		return fmt.Errorf("rabbitmq publisher not initialized")
@@ -344,7 +383,7 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 	// Create billing task for loading billing data
 	billingTask := models.BillingTask{
 		WorkspaceID:    task.WorkspaceID,
-		CreatorID:    task.CreatorID,
+		CreatorID:      task.CreatorID,
 		SubscriptionID: task.SubscriptionID,
 		BillingType:    billingCycle,
 		PaymentMethodID: task.PaymentMethodID,
@@ -443,6 +482,10 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 			logger.Infof("Deleted invoice %d after charge failure for workspace %d", invoiceID, task.WorkspaceID)
 		}
 
+		if pubErr := s.publishWorkspaceUpgrade(billingTask, upgradeName, int64(task.ScheduledPlan), "FAILED_UPGRADE", logger); pubErr != nil {
+			logger.WithError(pubErr).Errorf("failed to publish workspace upgrade failure event for workspace %d", task.WorkspaceID)
+		}
+
 		return err
 	}
 	logger.Infof("Successfully charged invoice %d for workspace %d", invoiceID, task.WorkspaceID)
@@ -484,6 +527,11 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 	}
 
 	logger.Infof("Subscription plan updated to %d for workspace %d (effective: %s)", task.ScheduledPlan, task.WorkspaceID, task.ScheduledEffectiveDate)
+
+	if pubErr := s.publishWorkspaceUpgrade(billingTask, upgradeName, int64(task.ScheduledPlan), "SUCCESSFUL_UPGRADE", logger); pubErr != nil {
+		logger.WithError(pubErr).Errorf("failed to publish workspace upgrade success event for workspace %d", task.WorkspaceID)
+	}
+
 	return nil
 }
 
