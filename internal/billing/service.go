@@ -359,7 +359,22 @@ func (s *BillingService) processSettleInvoice(task models.BillingTask, logger *l
 		InvoiceDesc: fmt.Sprintf("Settlement for invoice %d", invoiceID),
 	}
 
-	return s.chargeInvoice(invoiceID, costs, billingData, task, logger)
+	chargeErr := s.chargeInvoice(invoiceID, costs, billingData, task, logger)
+	if chargeErr != nil {
+		logger.WithError(chargeErr).Error("failed to charge invoice")
+		return chargeErr
+	}
+
+	// Update workspaces_suspensions to lift any suspensions for this invoice
+	suspensionUpdateErr := s.db.QueryRow("UPDATE workspaces_suspensions SET status = 'LIFTED' WHERE invoice_id = ?", invoiceID).Err()
+	if suspensionUpdateErr != nil {
+		logger.WithError(suspensionUpdateErr).Warnf("failed to lift suspensions for invoice %d", invoiceID)
+	} else {
+		logger.Infof("Lifted suspensions for invoice %d", invoiceID)
+	}
+
+	return nil
+
 }
 
 func (s *BillingService) processSettleInvoices(task models.BillingTask, logger *logrus.Entry) error {
@@ -433,7 +448,16 @@ func (s *BillingService) processSettleInvoices(task models.BillingTask, logger *
 			} else {
 				logger.Infof("Marked invoice %d as PAID", invoiceID)
 			}
+
+			// Update workspaces_suspensions to lift any suspensions for this invoice
+			suspensionUpdateErr := s.db.QueryRow("UPDATE workspaces_suspensions SET status = 'LIFTED' WHERE invoice_id = ?", invoiceID).Err()
+			if suspensionUpdateErr != nil {
+				logger.WithError(suspensionUpdateErr).Warnf("failed to lift suspensions for invoice %d", invoiceID)
+			} else {
+				logger.Infof("Lifted suspensions for invoice %d", invoiceID)
+			}
 		}
+
 	}
 
 	logger.Infof("Payment recorded successfully for user %d, workspace %d: %d cents", task.CreatorID, task.WorkspaceID, amountToPay)
