@@ -524,7 +524,10 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 	defer insertStmt.Close()
 
 	now := time.Now()
-	dueDate := now.Add(invoiceDueDateGracePeriod)
+
+	// Get invoice due date from customizations
+	invoiceDueDays := utils.GetInvoiceDueInDays(s.customizations)
+	dueDate := now.AddDate(0, 0, invoiceDueDays)
 	sourceService := "SCHEDULER"
 	taxMetadata := ""
 

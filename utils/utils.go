@@ -371,6 +371,21 @@ func GetGracePeriod(customizations *helpers.CustomizationSettingsKV) string {
 }
 
 
+
+func GetInvoiceDueInDays(customizations *helpers.CustomizationSettingsKV) int {
+	invoiceDueDays := 7 // default
+
+	if interfacePtr, ok := customizations.Pairs["invoice_due_in_days"]; ok && interfacePtr != nil {
+		if stringStruct, ok := (*interfacePtr).(*helpers.CustomizationStringValue); ok {
+			if v, err := strconv.Atoi(stringStruct.Value); err == nil {
+				invoiceDueDays = v
+			}
+		}
+	}
+
+	return invoiceDueDays
+}
+
 func CalculateNextDate(now time.Time, cycle string, anchor int) time.Time {
 	if cycle == "ANNUAL" {
 		return now.AddDate(1, 0, 0)
