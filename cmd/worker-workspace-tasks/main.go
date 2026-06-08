@@ -73,6 +73,16 @@ func processSuspensions(db *sql.DB, ch *amqp.Channel) {
 			}
 			log.Println("Workspace suspension record created with SUSPENDED status")
 
+		// Case 3: Not a follow-up and grace period is set - add suspension record with INITIATED status
+		case !task.IsFollowUp && task.GracePeriodExtension != nil:
+			_, err := db.Exec("INSERT INTO workspaces_suspensions (workspace_id, suspension_initiated_at, grace_period_extension, reason, status) VALUES (?, ?, ?, ?, ?)",
+				task.WorkspaceID, task.SuspensionInitiatedAt, task.GracePeriodExtension, task.Reason, "INITIATED")
+			if err != nil {
+				log.Printf("Error inserting into workspaces_suspensions: %v", err)
+			}
+			log.Println("Workspace suspension record created")
+
+
 		// Case 2: Is a follow-up and grace period has expired - suspend the workspace
 		case task.IsFollowUp && (task.GracePeriodExtension == nil || daysSinceSuspension > float64(*task.GracePeriodExtension)):
 			_, err := db.Exec("UPDATE workspaces_suspensions SET status = 'SUSPENDED', suspended_at = ? WHERE id = ?",
@@ -84,15 +94,6 @@ func processSuspensions(db *sql.DB, ch *amqp.Channel) {
 				log.Printf("Error publishing workspace suspended: %v", err)
 			}
 			log.Println("Workspace suspension status updated to SUSPENDED")
-
-		// Case 3: Default - add suspension record with all fields
-		default:
-			_, err := db.Exec("INSERT INTO workspaces_suspensions (workspace_id, suspension_initiated_at, grace_period_extension, reason, status) VALUES (?, ?, ?, ?, ?)",
-				task.WorkspaceID, task.SuspensionInitiatedAt, task.GracePeriodExtension, task.Reason, task.Status)
-			if err != nil {
-				log.Printf("Error inserting into workspaces_suspensions: %v", err)
-			}
-			log.Println("Workspace suspension record created")
 		}
 
 		d.Ack(true)
