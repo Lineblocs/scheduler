@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -276,6 +277,8 @@ func (s *BillingService) ProcessTask(task models.BillingTask) error {
 		err = s.processImmediateProrated(task, logger)
 	case task.Action == "SETTLE_INVOICE":
 		err = s.processSettleInvoice(task, logger)
+	case task.Action == "SETTLE_INVOICES":
+		err = s.processSettleInvoices(task, logger)
 	case task.BillingType == "ANNUAL" && (task.Action == "BILLING_RENEWAL" || task.Action == "BILLING_UPGRADE"):
 		err = s.processAnnual(task, logger)
 	case task.BillingType == "MONTHLY" && (task.Action == "BILLING_RENEWAL" || task.Action == "BILLING_UPGRADE"):
@@ -357,6 +360,84 @@ func (s *BillingService) processSettleInvoice(task models.BillingTask, logger *l
 	}
 
 	return s.chargeInvoice(invoiceID, costs, billingData, task, logger)
+}
+
+func (s *BillingService) processSettleInvoices(task models.BillingTask, logger *logrus.Entry) error {
+	logger.Infof("Processing settlement for user %d, workspace %d", task.CreatorID, task.WorkspaceID)
+
+	billingData, err := s.loadBillingData(task, task.BillingType, logger)
+	if err != nil {
+		logger.WithError(err).Error("failed to load billing data for settlement")
+		return err
+	}
+
+	// Calculate amount to pay (from invoice or task)
+	amountToPay := int64(task.Amount * 100)
+	if amountToPay <= 0 {
+		logger.Warnf("Invalid amount to pay for settlement: %d cents", amountToPay)
+		return fmt.Errorf("invalid amount to pay")
+	}
+
+	logger.Infof("Charging user %d for settlement: %d cents", task.CreatorID, amountToPay)
+	costs := &BillingCosts{
+		TotalCosts:  amountToPay,
+		InvoiceDesc: fmt.Sprintf("Settlement for user %d", task.CreatorID),
+	}
+	chargeErr := s.chargeUser(costs, billingData, task, logger)
+	if chargeErr != nil {
+		logger.WithError(chargeErr).Error("failed to charge user for settlement")
+		return chargeErr
+	}
+
+	logger.Infof("Successfully charged user %d for %d cents, recording payment", task.CreatorID, amountToPay)
+
+	// Record the successful payment in users_invoices_payments table
+	insertStmt, err := s.db.Prepare("INSERT INTO users_invoices_payments (`created_at`, `updated_at`, `user_id`, `workspace_id`, `cents`, `source`, `status`) VALUES (?, ?, ?, ?, ?, ?, ?)")
+	if err != nil {
+		logger.WithError(err).Error("failed to prepare payment insert statement")
+		return err
+	}
+	defer insertStmt.Close()
+
+	now := time.Now()
+	_, err = insertStmt.Exec(
+		now,
+		now,
+		task.CreatorID,
+		task.WorkspaceID,
+		amountToPay,
+		"WEBUI",
+		"PAID",
+	)
+	if err != nil {
+		logger.WithError(err).Error("failed to insert payment record")
+		return err
+	}
+
+	// Parse and update invoice statuses
+	if task.InvoiceID != "" {
+		invoiceIDs := strings.Split(task.InvoiceID, ",")
+		for _, invoiceIDStr := range invoiceIDs {
+			invoiceIDStr = strings.TrimSpace(invoiceIDStr)
+			if invoiceIDStr == "" {
+				continue
+			}
+			invoiceID, parseErr := strconv.ParseInt(invoiceIDStr, 10, 64)
+			if parseErr != nil {
+				logger.WithError(parseErr).Warnf("invalid invoice id in csv: %s", invoiceIDStr)
+				continue
+			}
+			updateErr := s.markInvoiceChargePaid(invoiceID, "", 0, logger)
+			if updateErr != nil {
+				logger.WithError(updateErr).Warnf("failed to mark invoice %d as paid", invoiceID)
+			} else {
+				logger.Infof("Marked invoice %d as PAID", invoiceID)
+			}
+		}
+	}
+
+	logger.Infof("Payment recorded successfully for user %d, workspace %d: %d cents", task.CreatorID, task.WorkspaceID, amountToPay)
+	return nil
 }
 
 func (s *BillingService) getSubscriptionData(subscriptionID int64, logger *logrus.Entry) (string, error) {
@@ -503,14 +584,13 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 		return err
 	}
 
-	logger.Infof("Updating subscription for workspace %d: setting scheduled_plan_id=%d, scheduled_effective_date=%s", task.WorkspaceID, task.ScheduledPlan, task.ScheduledEffectiveDate)
+	logger.Infof("Updating subscription for workspace %d: setting current_plan_id=%d", task.WorkspaceID, task.ScheduledPlan)
 	_, err = tx.Exec(`
         UPDATE subscriptions 
-        SET scheduled_plan_id = ?,
-            scheduled_effective_date = ?,
+        SET current_plan_id = ?,
             last_billed_at = NOW(),
             updated_at = NOW() 
-        WHERE workspace_id = ?`, task.ScheduledPlan, task.ScheduledEffectiveDate, task.WorkspaceID)
+        WHERE workspace_id = ?`, task.ScheduledPlan, task.WorkspaceID)
 
 	if err != nil {
 		tx.Rollback()
@@ -607,6 +687,11 @@ func (s *BillingService) processAnnual(task models.BillingTask, logger *logrus.E
 }
 
 // --- CHARGE LOGIC ---
+
+func (s *BillingService) chargeUser(costs *BillingCosts, data *BillingData, task models.BillingTask, logger *logrus.Entry) error {
+	invoiceID := int64(0) // No invoice record for this flow, so we pass 0 and handle accordingly in chargeUser
+	return s.chargeWithCard(invoiceID, costs, data, task, logger)
+}
 
 func (s *BillingService) chargeInvoice(invoiceID int64, costs *BillingCosts, data *BillingData, task models.BillingTask, logger *logrus.Entry) error {
 	logger.Infof("Charging user %d, on workspace %d, plan type %s", data.User.Id, data.Workspace.Id, data.Workspace.Plan)
