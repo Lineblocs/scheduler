@@ -125,6 +125,7 @@ type PaymentReceiptTask struct {
 type SuspensionTask struct {
     ID                   int64     `json:"id"`
     WorkspaceID          int       `json:"workspace_id"`
+    InvoiceID          int       `json:"invoice_id"`
     SuspensionInitiatedAt          time.Time `json:"suspension_initiated_at"`
     GracePeriodExtension *int      `json:"grace_period_extension"`
     Reason               string    `json:"reason"`

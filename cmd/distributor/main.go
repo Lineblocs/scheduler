@@ -529,6 +529,7 @@ func runWorkspaceSuspensionsDistributor() {
 
 		task := models.SuspensionTask{
 			WorkspaceID: workspaceID,
+			InvoiceID: invoiceID,
 			Status: 	"PENDING",
 			Reason:      "Failed invoice payment",
 			GracePeriodExtension: gracePeriod,
