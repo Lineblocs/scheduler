@@ -60,7 +60,7 @@ func (hndl *StripeBillingHandler) ChargeCustomer(user *helpers.User, workspace *
     // Removed the SQL lookup
     var row *sql.Row
     if invoice.PaymentMethodId == nil {
-        row = db.QueryRow("SELECT id, stripe_payment_method_id, last_4, issuer FROM users_cards WHERE `workspace_id`=? AND `stripe_payment_method_id` = ?", workspace.Id, invoice.PaymentMethodId)
+        row = db.QueryRow("SELECT id, stripe_payment_method_id, last_4, issuer FROM users_cards WHERE `workspace_id`=? AND `primary` = 1", workspace.Id)
         err := row.Scan(&id, &paymentMethodId, &cardLast4, &cardBrand)
         if err != nil {
             return nil, err

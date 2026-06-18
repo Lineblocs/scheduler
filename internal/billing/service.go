@@ -266,7 +266,8 @@ func (s *BillingService) ProcessTask(task models.BillingTask) error {
 	logger := logrus.WithField("component", "billing").
 		WithField("workspace_id", task.WorkspaceID).
 		WithField("run_id", task.RunID).
-		WithField("action", task.Action)
+		WithField("action", task.Action).
+		WithField("amount", task.Amount)
 
 	var err error
 
