@@ -1097,6 +1097,7 @@ func (s *BillingService) markInvoiceChargePaid(invoiceID int64, gatewayID string
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec("UPDATE users_invoices SET status = 'PAID', source ='CARD', cents_collected = ?, confirmation_number = ?, payment_gateway_id = ?, paid_date = ? WHERE id = ?", totalCosts, confirmNumber, gatewayID, data.Now, invoiceID)
+	paidDate := time.Now().Format(time.RFC3339)
+	_, err = s.db.Exec("UPDATE users_invoices SET status = 'PAID', source ='CARD', cents_collected = ?, confirmation_number = ?, payment_gateway_id = ?, paid_date = ? WHERE id = ?", totalCosts, confirmNumber, gatewayID, paidDate, invoiceID)
 	return err
 }
