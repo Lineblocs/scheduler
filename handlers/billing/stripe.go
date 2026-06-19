@@ -51,15 +51,16 @@ func (hndl *StripeBillingHandler) ChargeCustomer(user *helpers.User, workspace *
     var cardBrand string
 
     // Use the attributes directly from the invoice object
-    if invoice.PaymentMethodId != nil {
-        paymentMethodId = *invoice.PaymentMethodId
+    if invoice.PaymentMethodId != "" {
+        helpers.Log(logrus.InfoLevel, fmt.Sprintf("Payment method setup from invoice for workspace %d - PaymentMethodId: %s", workspace.Id, invoice.PaymentMethodId))
+        paymentMethodId = invoice.PaymentMethodId
         cardLast4 = invoice.CardLast4
         cardBrand = invoice.CardBrand
     }
 
     // Removed the SQL lookup
     var row *sql.Row
-    if invoice.PaymentMethodId == nil {
+    if invoice.PaymentMethodId == "" {
         helpers.Log(logrus.InfoLevel, fmt.Sprintf("No PaymentMethodId on invoice, querying for primary card in workspace: %d", workspace.Id))
         row = db.QueryRow("SELECT id, stripe_payment_method_id, last_4, issuer FROM users_cards WHERE `workspace_id`=? AND `primary` = 1", workspace.Id)
         err := row.Scan(&id, &paymentMethodId, &cardLast4, &cardBrand)

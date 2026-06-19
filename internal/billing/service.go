@@ -778,11 +778,15 @@ func (s *BillingService) chargeWithCard(invoiceID int64, costs *BillingCosts, da
 		Cents:       cardChargeAmount,
 		InvoiceDesc: costs.InvoiceDesc,
 	}
+
+	logger.Infof("Payment method ID: %s", task.PaymentMethodID)
+
 	if task.PaymentMethodID != "" {
-		invoice.PaymentMethodId = &task.PaymentMethodID
+		invoice.PaymentMethodId = task.PaymentMethodID
 		invoice.CardLast4 = task.CardLast4
 		invoice.CardBrand = task.CardBrand
 	}
+
 
 	chargeResult, err := s.paymentRepository.ChargeCustomer(data.BillingParams.(*utils.BillingParams), data.User, data.Workspace, &invoice)
 	if err != nil {
@@ -1097,7 +1101,7 @@ func (s *BillingService) markInvoiceChargePaid(invoiceID int64, gatewayID string
 	if err != nil {
 		return err
 	}
-	paidDate := time.Now().Format(time.RFC3339)
+	paidDate := time.Now().Format("2006-01-02 15:04:05")
 	_, err = s.db.Exec("UPDATE users_invoices SET status = 'PAID', source ='CARD', cents_collected = ?, confirmation_number = ?, payment_gateway_id = ?, paid_date = ? WHERE id = ?", totalCosts, confirmNumber, gatewayID, paidDate, invoiceID)
 	return err
 }
