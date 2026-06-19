@@ -317,7 +317,35 @@ func (s *BillingService) processImmediateProrated(task models.BillingTask, logge
 
 	_ = s.publishInvoiceGenerated(task, invoiceID, logger)
 
-	return s.chargeInvoice(invoiceID, costs, billingData, task, logger)
+	err = s.chargeInvoice(invoiceID, costs, billingData, task, logger)
+	if err != nil {
+		logger.WithError(err).Error("failed to charge invoice for prorated billing")
+		err = s.suspendWorkspace(task.WorkspaceID, int(invoiceID), "Failed to charge invoice", "SUSPENDED")
+		logger.WithError(err).Error("failed to suspend workspace after charge failure")
+
+		return err
+	}
+
+	return nil
+}
+
+func (s *BillingService) suspendWorkspace(workspaceID int, invoiceID int, reason string, status string) error {
+	now := time.Now()
+
+	task := models.SuspensionTask{
+		WorkspaceID:           workspaceID,
+		InvoiceID:             invoiceID,
+		Status:                status,
+		Reason:                reason,
+		GracePeriodExtension:  nil,
+		SuspensionInitiatedAt: now,
+		IsFollowUp:            false,
+	}
+	body, _ := json.Marshal(task)
+
+	err := s.rabbitmqPublisher.Publish("workspace_suspensions_tasks", body)
+
+	return err
 }
 
 func (s *BillingService) processSettleInvoice(task models.BillingTask, logger *logrus.Entry) error {
