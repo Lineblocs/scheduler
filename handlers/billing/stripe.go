@@ -60,11 +60,17 @@ func (hndl *StripeBillingHandler) ChargeCustomer(user *helpers.User, workspace *
     // Removed the SQL lookup
     var row *sql.Row
     if invoice.PaymentMethodId == nil {
+        helpers.Log(logrus.InfoLevel, fmt.Sprintf("No PaymentMethodId on invoice, querying for primary card in workspace: %d", workspace.Id))
         row = db.QueryRow("SELECT id, stripe_payment_method_id, last_4, issuer FROM users_cards WHERE `workspace_id`=? AND `primary` = 1", workspace.Id)
         err := row.Scan(&id, &paymentMethodId, &cardLast4, &cardBrand)
         if err != nil {
-            return nil, err
+            helpers.Log(logrus.ErrorLevel, fmt.Sprintf("could not lookup default payment method for workspace %d", workspace.Id))
+
+            return nil, fmt.Errorf("could not lookup default payment method for workspace %d", workspace.Id)
         }
+        helpers.Log(logrus.InfoLevel, fmt.Sprintf("Successfully retrieved card - ID: %d, Last4: %s, Brand: %s", id, cardLast4, cardBrand))
+    } else {
+        helpers.Log(logrus.InfoLevel, fmt.Sprintf("Using PaymentMethodId from invoice: %s", paymentMethodId))
     }
 
     domain := os.Getenv("DEPLOYMENT_DOMAIN")
