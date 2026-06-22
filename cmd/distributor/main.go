@@ -26,6 +26,7 @@ import (
 var (
 	rdb            *redis.Client
 	db             *sql.DB
+	amqpConn       *amqp.Connection // Shared persistent broker connection
 	customizations *helpers.CustomizationSettingsKV
 )
 
@@ -51,6 +52,13 @@ func main() {
 		log.Fatalf("Critical: Database connection failed: %v", err)
 	}
 
+	// 3. INITIALIZE SHARED RABBITMQ CONNECTION
+	// Connected once during boot phase to avoid socket exhaustion loops
+	amqpConn, err = amqp.Dial(os.Getenv("QUEUE_URL"))
+	if err != nil {
+		log.Fatalf("Critical: RabbitMQ connection establishment failed: %v", err)
+	}
+
 	var err2 error
 	customizations, err2 = helpers.GetCustomizationKVs()
 	if err2 != nil {
@@ -60,7 +68,7 @@ func main() {
 	billingFlow := utils.GetBillingFlow(customizations)
 	c := cron.New()
 
-	// 3. CONFIGURE CRON TASKS
+	// 4. CONFIGURE CRON TASKS
 	if billingFlow == "ANNIVERSARY" {
 		log.Println("[INIT] Starting Distributor in ANNIVERSARY mode...")
 		c.AddFunc("0 0 * * *", func() {
@@ -98,7 +106,7 @@ func main() {
 	log.Printf("Scheduler started. Redis: %s", opt.Addr)
 	c.Start()
 
-	// 4. GRACEFUL SHUTDOWN LOGIC
+	// 5. GRACEFUL SHUTDOWN LOGIC
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
@@ -106,6 +114,10 @@ func main() {
 	log.Printf("Received signal: %v. Shutting down gracefully...", sig)
 
 	c.Stop() // Stops the cron scheduler from starting new jobs
+	if amqpConn != nil {
+		log.Println("Closing RabbitMQ connection pool...")
+		amqpConn.Close()
+	}
 	if db != nil {
 		log.Println("Closing Database pool...")
 		db.Close()
@@ -132,15 +144,9 @@ func runAnniversaryBillingDistributor(scheduleType string) {
 		return
 	}
 
-	conn, err := amqp.Dial(os.Getenv("QUEUE_URL"))
+	ch, err := amqpConn.Channel()
 	if err != nil {
-		log.Printf("[%s] RabbitMQ connection failed: %v", scheduleType, err)
-		return
-	}
-	defer conn.Close()
-
-	ch, err := conn.Channel()
-	if err != nil {
+		log.Printf("[%s] Channel allocation failed: %v", scheduleType, err)
 		return
 	}
 	defer ch.Close()
@@ -149,7 +155,6 @@ func runAnniversaryBillingDistributor(scheduleType string) {
 	confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 1))
 	q, _ := ch.QueueDeclare("billing_tasks", true, false, false, false, nil)
 
-	// UPDATED: s.next_billing_date is explicitly queried to calculate accurate next cycles without drift
 	query := `
         SELECT 
             s.id, s.workspace_id, w.creator_id, s.current_plan_id, 
@@ -199,7 +204,6 @@ func runAnniversaryBillingDistributor(scheduleType string) {
 			day = int(anchorDay.Int64)
 		}
 
-		// UPDATED: Anchor calculation to the true current baseline date instead of 'now' to avoid stolen service days
 		calculationBaseDate := now
 		if currentNextBillingDate.Valid {
 			calculationBaseDate = currentNextBillingDate.Time
@@ -241,6 +245,11 @@ func runAnniversaryBillingDistributor(scheduleType string) {
 			rdb.Del(ctx, dedupeKey)
 		}
 	}
+
+	if err = rows.Err(); err != nil {
+		log.Printf("[%s] CRITICAL: Subscription row stream interrupted mid-flight: %v", scheduleType, err)
+	}
+
 	log.Printf("[%s] Finished. Total Queued: %d", scheduleType, count)
 }
 
@@ -266,13 +275,7 @@ func runBillingDistributor(scheduleType string) {
 		return
 	}
 
-	conn, err := amqp.Dial(os.Getenv("QUEUE_URL"))
-	if err != nil {
-		return
-	}
-	defer conn.Close()
-
-	ch, err := conn.Channel()
+	ch, err := amqpConn.Channel()
 	if err != nil {
 		return
 	}
@@ -358,6 +361,11 @@ func runBillingDistributor(scheduleType string) {
 			rdb.Del(ctx, dedupeKey)
 		}
 	}
+
+	if err = rows.Err(); err != nil {
+		log.Printf("[%s] CRITICAL: Subscription rows parsing issue: %v", scheduleType, err)
+	}
+
 	log.Printf("[%s] Finished. Total Queued: %d", scheduleType, count)
 }
 
@@ -365,15 +373,9 @@ func runRecordingsDistributor() {
 	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
 	defer cancel()
 
-	conn, err := amqp.Dial(os.Getenv("QUEUE_URL"))
+	ch, err := amqpConn.Channel()
 	if err != nil {
-		log.Printf("[RECORDINGS] MQ connection failed: %v", err)
-		return
-	}
-	defer conn.Close()
-
-	ch, err := conn.Channel()
-	if err != nil {
+		log.Printf("[RECORDINGS] Channel open failed: %v", err)
 		return
 	}
 	defer ch.Close()
@@ -442,6 +444,11 @@ func runRecordingsDistributor() {
 			log.Printf("[RECORDINGS] Timeout waiting for ACK on ID %d", rID)
 		}
 	}
+
+	if err = rows.Err(); err != nil {
+		log.Printf("[RECORDINGS] CRITICAL: Recording scan interrupted: %v", err)
+	}
+
 	log.Printf("[RECORDINGS] Finished. Total Queued: %d", count)
 }
 
@@ -450,24 +457,20 @@ func runWorkspaceSuspensionsDistributor() {
 	defer cancel()
 
 	now := time.Now().UTC()
-	lockKeySuffix := now.Format("2006-01-02")
+	// Switched to hourly window to allow cron execution recovery paths
+	lockKeySuffix := now.Format("2006-01-02-15")
 	globalLockKey := fmt.Sprintf("workspace_suspensions_run_lock:%s", lockKeySuffix)
 
-	locked, err := rdb.SetNX(ctx, globalLockKey, "running", 23*time.Hour).Result()
+	// Expiry bounded to 55 minutes to fix the hourly skip logic flaw
+	locked, err := rdb.SetNX(ctx, globalLockKey, "running", 55*time.Minute).Result()
 	if err != nil || !locked {
 		log.Printf("[SUSPENSIONS] Skip: Lock %s held by another instance.", globalLockKey)
 		return
 	}
 
-	conn, err := amqp.Dial(os.Getenv("QUEUE_URL"))
+	ch, err := amqpConn.Channel()
 	if err != nil {
-		log.Printf("[SUSPENSIONS] RabbitMQ connection failed: %v", err)
-		return
-	}
-	defer conn.Close()
-
-	ch, err := conn.Channel()
-	if err != nil {
+		log.Printf("[SUSPENSIONS] Channel open failed: %v", err)
 		return
 	}
 	defer ch.Close()
@@ -567,6 +570,11 @@ func runWorkspaceSuspensionsDistributor() {
 			log.Printf("[SUSPENSIONS] Timeout waiting for ACK on workspaceID %d", workspaceID)
 		}
 	}
+
+	if err = rows.Err(); err != nil {
+		log.Printf("[SUSPENSIONS] CRITICAL: Invoice table streaming issue: %v", err)
+	}
+
 	log.Printf("[SUSPENSIONS] Finished. Total Queued: %d", count)
 }
 
@@ -584,15 +592,9 @@ func runPlanMigrationsDistributor() {
 		return
 	}
 
-	conn, err := amqp.Dial(os.Getenv("QUEUE_URL"))
+	ch, err := amqpConn.Channel()
 	if err != nil {
-		log.Printf("[MIGRATIONS] RabbitMQ connection failed: %v", err)
-		return
-	}
-	defer conn.Close()
-
-	ch, err := conn.Channel()
-	if err != nil {
+		log.Printf("[MIGRATIONS] Channel open failed: %v", err)
 		return
 	}
 	defer ch.Close()
@@ -630,15 +632,24 @@ func runPlanMigrationsDistributor() {
 			continue
 		}
 
+		// Wrapped database mutation and RMQ event publication inside an atomic database transaction.
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			log.Printf("[MIGRATIONS] Failed to start fallback tx for subscription %d: %v", subID, err)
+			rdb.Del(ctx, dedupeKey)
+			continue
+		}
+
 		updateQuery := `
             UPDATE subscriptions
             SET current_plan_id = scheduled_plan_id, 
             scheduled_plan_id = NULL,
             scheduled_effective_date = NULL
             WHERE id = ?`
-		_, err = db.ExecContext(ctx, updateQuery, subID)
+		_, err = tx.ExecContext(ctx, updateQuery, subID)
 		if err != nil {
-			log.Printf("[MIGRATIONS] Failed to update subscription %d: %v", subID, err)
+			tx.Rollback()
+			log.Printf("[MIGRATIONS] Failed to execute update statement for subscription %d: %v", subID, err)
 			rdb.Del(ctx, dedupeKey)
 			continue
 		}
@@ -665,18 +676,35 @@ func runPlanMigrationsDistributor() {
 		})
 
 		if err != nil {
-			log.Printf("[MIGRATIONS] Publish error: %v", err)
+			tx.Rollback() // Database and message states are maintained completely in sync
+			log.Printf("[MIGRATIONS] Event publish error encountered on sub %d: %v. Database state rolled back.", subID, err)
+			rdb.Del(ctx, dedupeKey)
 			continue
 		}
 
 		select {
 		case c := <-confirms:
 			if c.Ack {
-				count++
+				if err := tx.Commit(); err != nil {
+					log.Printf("[MIGRATIONS] Failed to commit atomic tx for sub %d: %v", subID, err)
+				} else {
+					count++
+				}
+			} else {
+				tx.Rollback()
+				rdb.Del(ctx, dedupeKey)
+				log.Printf("[MIGRATIONS] Broker NACK received for workspace %d. Transaction rolled back.", workspaceID)
 			}
 		case <-time.After(5 * time.Second):
-			log.Printf("[MIGRATIONS] Timeout waiting for ACK on workspace %d", workspaceID)
+			tx.Rollback()
+			rdb.Del(ctx, dedupeKey)
+			log.Printf("[MIGRATIONS] Broker confirmation timeout for workspace %d. Transaction rolled back.", workspaceID)
 		}
 	}
+
+	if err = rows.Err(); err != nil {
+		log.Printf("[MIGRATIONS] CRITICAL: Migration cursor data failure: %v", err)
+	}
+
 	log.Printf("[MIGRATIONS] Finished. Total Migrated: %d", count)
 }

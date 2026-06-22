@@ -1,6 +1,7 @@
 package billing
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -284,7 +285,7 @@ func (s *BillingService) ProcessTask(task models.BillingTask) error {
 		return err
 	}
 
-	// UPDATED: If this task is a standard recurring cycle, bypass the old internal update.
+	// If this task is a standard recurring cycle, bypass the old internal update.
 	// The state transition is governed safely by the Consumer's database transaction wrapper.
 	if task.Action == "BILLING_RENEWAL" || task.Action == "BILLING_UPGRADE" {
 		logger.Debug("Bypassing internal update; tracking state in consumer transaction layer instead.")
@@ -549,7 +550,7 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 
 	lineItemStmt, err := s.db.Prepare("INSERT INTO users_invoices_line_items (`name`, `cents`, `invoice_id`, `key_name`, `is_recurring`, `created_at`, `updated_at`) VALUES (?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
-		return err
+		return invoiceID, err
 	}
 	defer lineItemStmt.Close()
 
@@ -769,8 +770,8 @@ func (s *BillingService) chargeWithCard(invoiceID int64, costs *BillingCosts, da
 	logger.Info(fmt.Sprintf("Total costs to charge on card is %d cents", cardChargeAmount))
 
 	invoice := models.UserInvoice{
-		Id:    int(invoiceID),
-		Cents: cardChargeAmount,
+		Id:          int(invoiceID),
+		Cents:       cardChargeAmount,
 		InvoiceDesc: costs.InvoiceDesc,
 	}
 
@@ -1062,25 +1063,25 @@ func (s *BillingService) createInvoice(costs *BillingCosts, data *BillingData, l
 		cents   int64
 		keyName string
 	}{
-		{"Call Tolls", costs.CallTollsCosts, "CALL_TOLLS"},
-		{"Recording Storage", costs.RecordingCosts, "RECORDING_STORAGE"},
-		{"Fax Services", costs.FaxCosts, "FAX_SERVICES"},
-		{"DID Rental", costs.NumberRentalCosts, "DID_RENTAL"},
-		{"Membership", costs.MembershipCosts, "MEMBERSHIP"},
+		{"Call Tolls", costs.CallTollsCosts, "call_tolls"},
+		{"Recording Storage", costs.RecordingCosts, "recording_storage"},
+		{"Fax Services", costs.FaxCosts, "fax_services"},
+		{"DID Rental", costs.NumberRentalCosts, "did_rental"},
+		{"Membership", costs.MembershipCosts, "membership"},
 	}
 
 	for _, item := range lineItems {
-        isRecurring := 0
-        if item.keyName == "DID_RENTAL" || item.keyName == "MEMBERSHIP" {
-            isRecurring = 1
-        }
-        _, err := lineItemStmt.Exec(item.name, float64(item.cents), invoiceID, item.keyName, isRecurring, data.Now, data.Now)
-        if err != nil {
-            logger.WithError(err).Error("error creating invoice line item")
-        }
-    }
+		isRecurring := 0
+		if item.keyName == "did_rental" || item.keyName == "membership" {
+			isRecurring = 1
+		}
+		_, err := lineItemStmt.Exec(item.name, float64(item.cents), invoiceID, item.keyName, isRecurring, data.Now, data.Now)
+		if err != nil {
+			logger.WithError(err).Error("error creating invoice line item")
+		}
+	}
 
-    return invoiceID, nil
+	return invoiceID, nil
 }
 
 // --- STATUS UPDATES ---
@@ -1100,20 +1101,20 @@ func (s *BillingService) markInvoiceChargePaid(invoiceID int64, gatewayID string
 	return err
 }
 
-// NEW: Missing compilation helper to identify transient payment/network failures vs hard declines
+// Missing compilation helper to identify transient payment/network failures vs hard declines
 func IsTransientError(err error) bool {
 	if err == nil {
 		return false
 	}
-	
+
 	errStr := strings.ToLower(err.Error())
-	
+
 	// Catches network drops, context timeouts, gateway rate limits (429), or internal service glitches (503/502)
-	return strings.Contains(errStr, "timeout") || 
-		strings.Contains(errStr, "deadline exceeded") || 
-		strings.Contains(errStr, "connection refused") || 
-		strings.Contains(errStr, "try again later") || 
-		strings.Contains(errStr, "429") || 
-		strings.Contains(errStr, "503") || 
+	return strings.Contains(errStr, "timeout") ||
+		strings.Contains(errStr, "deadline exceeded") ||
+		strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "try again later") ||
+		strings.Contains(errStr, "429") ||
+		strings.Contains(errStr, "503") ||
 		strings.Contains(errStr, "502")
 }
