@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"errors"
+	"context"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	helpers "github.com/Lineblocs/go-helpers"
@@ -1132,4 +1134,9 @@ func (s *BillingService) markInvoiceChargePaid(invoiceID int64, gatewayID string
 	paidDate := time.Now().Format("2006-01-02 15:04:05")
 	_, err = s.db.Exec("UPDATE users_invoices SET status = 'PAID', source ='CARD', cents_collected = ?, confirmation_number = ?, payment_gateway_id = ?, paid_date = ? WHERE id = ?", totalCosts, confirmNumber, gatewayID, paidDate, invoiceID)
 	return err
+}
+
+func IsTransientError(err error) bool {
+    // Return true if it's a network timeout, rate limit (429), or gateway 503
+    return errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "timeout")
 }

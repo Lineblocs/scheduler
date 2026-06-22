@@ -8,9 +8,9 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
-	"strconv"
 
 	helpers "github.com/Lineblocs/go-helpers"
 	"lineblocs.com/scheduler/models"
@@ -24,8 +24,8 @@ import (
 
 // Global variables shared across goroutines
 var (
-	rdb             *redis.Client
-	db              *sql.DB
+	rdb            *redis.Client
+	db             *sql.DB
 	customizations *helpers.CustomizationSettingsKV
 )
 
@@ -80,8 +80,6 @@ func main() {
 		})
 	}
 
-
-
 	c.AddFunc("0 * * * *", func() {
 		log.Println("[PROD] Triggering Workspace Suspension Distributor...")
 		runWorkspaceSuspensionsDistributor()
@@ -101,15 +99,12 @@ func main() {
 	c.Start()
 
 	// 4. GRACEFUL SHUTDOWN LOGIC
-	// Create a channel to listen for OS signals
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
-	// Wait for a signal (Blocks main goroutine)
 	sig := <-stop
 	log.Printf("Received signal: %v. Shutting down gracefully...", sig)
 
-	// Cleanup resources
 	c.Stop() // Stops the cron scheduler from starting new jobs
 	if db != nil {
 		log.Println("Closing Database pool...")
@@ -154,11 +149,12 @@ func runAnniversaryBillingDistributor(scheduleType string) {
 	confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 1))
 	q, _ := ch.QueueDeclare("billing_tasks", true, false, false, false, nil)
 
+	// UPDATED: s.next_billing_date is explicitly queried to calculate accurate next cycles without drift
 	query := `
         SELECT 
             s.id, s.workspace_id, w.creator_id, s.current_plan_id, 
             s.scheduled_plan_id, s.scheduled_effective_date, s.provider_subscription_id,
-            s.billing_anchor_day, s.billing_cycle
+            s.billing_anchor_day, s.billing_cycle, s.next_billing_date
         FROM subscriptions s
         JOIN workspaces w ON s.workspace_id = w.id
         WHERE s.status = 'ACTIVE' 
@@ -179,8 +175,9 @@ func runAnniversaryBillingDistributor(scheduleType string) {
 		var schedPlanID sql.NullInt64
 		var schedDate sql.NullTime
 		var provSubID sql.NullString
+		var currentNextBillingDate sql.NullTime
 
-		if err := rows.Scan(&subID, &workspaceID, &creatorID, &currentPlanID, &schedPlanID, &schedDate, &provSubID, &anchorDay, &cycle); err != nil {
+		if err := rows.Scan(&subID, &workspaceID, &creatorID, &currentPlanID, &schedPlanID, &schedDate, &provSubID, &anchorDay, &cycle, &currentNextBillingDate); err != nil {
 			continue
 		}
 
@@ -190,14 +187,24 @@ func runAnniversaryBillingDistributor(scheduleType string) {
 			continue
 		}
 
-		action := "renewal"
+		action := "BILLING_RENEWAL"
 		planToBill := currentPlanID
 		if schedPlanID.Valid && schedDate.Valid && !now.Before(schedDate.Time) {
-			action = "upgrade"
+			action = "BILLING_UPGRADE"
 			planToBill = int(schedPlanID.Int64)
 		}
 
-		nextDate := utils.CalculateNextDate(now, cycle, int(anchorDay.Int64))
+		day := now.Day()
+		if anchorDay.Valid && anchorDay.Int64 > 0 {
+			day = int(anchorDay.Int64)
+		}
+
+		// UPDATED: Anchor calculation to the true current baseline date instead of 'now' to avoid stolen service days
+		calculationBaseDate := now
+		if currentNextBillingDate.Valid {
+			calculationBaseDate = currentNextBillingDate.Time
+		}
+		nextDate := utils.CalculateNextDate(calculationBaseDate, cycle, day)
 
 		task := models.BillingTask{
 			RunID:                  globalLockKey,
@@ -469,15 +476,15 @@ func runWorkspaceSuspensionsDistributor() {
 	confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 1))
 
 	query := `
-		SELECT
-			w.id,
-			i.id
-		FROM workspaces w
-		JOIN users_invoices i ON i.workspace_id = w.id
-		WHERE i.status != 'PAID' 
-		  AND i.due_date >= ?
-		GROUP BY w.id, i.id
-		ORDER BY w.id`
+        SELECT
+            w.id,
+            i.id
+        FROM workspaces w
+        JOIN users_invoices i ON i.workspace_id = w.id
+        WHERE i.status != 'PAID' 
+          AND i.due_date >= ?
+        GROUP BY w.id, i.id
+        ORDER BY w.id`
 
 	rows, err := db.QueryContext(ctx, query, now.Format("2006-01-02"))
 	if err != nil {
@@ -500,10 +507,9 @@ func runWorkspaceSuspensionsDistributor() {
 			continue
 		}
 
-		// Idempotency check: verify no active suspension already exists for this invoice
 		checkQuery := `SELECT COUNT(*) as count, COALESCE(MIN(id), 0)
-			FROM workspaces_suspensions
-			WHERE invoice_id = ?`
+            FROM workspaces_suspensions
+            WHERE invoice_id = ?`
 		var suspensionExists int
 		var suspensionID int
 		isFollowUp := false
@@ -526,15 +532,14 @@ func runWorkspaceSuspensionsDistributor() {
 			}
 		}
 
-
 		task := models.SuspensionTask{
-			WorkspaceID: workspaceID,
-			InvoiceID: invoiceID,
-			Status: 	"PENDING",
-			Reason:      "Failed invoice payment",
-			GracePeriodExtension: gracePeriod,
+			WorkspaceID:           workspaceID,
+			InvoiceID:             invoiceID,
+			Status:                "PENDING",
+			Reason:                "Failed invoice payment",
+			GracePeriodExtension:  gracePeriod,
 			SuspensionInitiatedAt: now,
-			IsFollowUp: isFollowUp,
+			IsFollowUp:            isFollowUp,
 		}
 		body, _ := json.Marshal(task)
 
@@ -625,13 +630,12 @@ func runPlanMigrationsDistributor() {
 			continue
 		}
 
-		// Update database directly initially, maybe best to move to worker for retry later
 		updateQuery := `
-			UPDATE subscriptions
-			SET current_plan_id = scheduled_plan_id, 
-			scheduled_plan_id = NULL,
-			scheduled_effective_date = NULL
-			WHERE id = ?`
+            UPDATE subscriptions
+            SET current_plan_id = scheduled_plan_id, 
+            scheduled_plan_id = NULL,
+            scheduled_effective_date = NULL
+            WHERE id = ?`
 		_, err = db.ExecContext(ctx, updateQuery, subID)
 		if err != nil {
 			log.Printf("[MIGRATIONS] Failed to update subscription %d: %v", subID, err)
@@ -639,7 +643,6 @@ func runPlanMigrationsDistributor() {
 			continue
 		}
 
-		// Dispatch RabbitMQ event
 		type PlanUpgradeEvent struct {
 			WorkspaceID int    `json:"workspace_id"`
 			NewPlanID   int    `json:"new_plan_id"`
@@ -677,4 +680,3 @@ func runPlanMigrationsDistributor() {
 	}
 	log.Printf("[MIGRATIONS] Finished. Total Migrated: %d", count)
 }
-
