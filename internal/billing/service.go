@@ -8,11 +8,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"errors"
-	"context"
 
-	amqp "github.com/rabbitmq/amqp091-go"
 	helpers "github.com/Lineblocs/go-helpers"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/sirupsen/logrus"
 	"lineblocs.com/scheduler/models"
 	"lineblocs.com/scheduler/repository"
@@ -61,7 +59,6 @@ type GenericRabbitMQPublisher struct {
 	channel *amqp.Channel
 }
 
-
 func NewGenericRabbitMQPublisher(channel *amqp.Channel) *GenericRabbitMQPublisher {
 	return &GenericRabbitMQPublisher{channel: channel}
 }
@@ -106,7 +103,6 @@ func (s *BillingService) isOverageEnabled() bool {
 }
 
 // --- RABBITMQ PUBLISHERS ---
-
 
 func (s *BillingService) publishWorkspaceUpgrade(task models.BillingTask, planName string, planID int64, action string, logger *logrus.Entry) error {
 	if s.rabbitmqPublisher == nil {
@@ -260,8 +256,6 @@ func (s *BillingService) publishInvoiceGenerated(task models.BillingTask, invoic
 	return nil
 }
 
-
-
 // --- CORE ROUTING (ProcessTask) ---
 
 func (s *BillingService) ProcessTask(task models.BillingTask) error {
@@ -273,8 +267,6 @@ func (s *BillingService) ProcessTask(task models.BillingTask) error {
 
 	var err error
 
-	// 1. Route based on Action (Immediate Signup/Upgrade vs. Regular Renewal)
-	// Anniversary distributor uses "renewal" or "upgrade"
 	switch {
 	case task.Action == "IMMEDIATE":
 		err = s.processImmediateProrated(task, logger)
@@ -285,7 +277,6 @@ func (s *BillingService) ProcessTask(task models.BillingTask) error {
 	case task.BillingType == "ANNUAL" && (task.Action == "BILLING_RENEWAL" || task.Action == "BILLING_UPGRADE"):
 		err = s.processAnnual(task, logger)
 	case task.BillingType == "MONTHLY" && (task.Action == "BILLING_RENEWAL" || task.Action == "BILLING_UPGRADE"):
-		// Handles MONTHLY and ANNIVERSARY flows
 		err = s.processMonthly(task, logger)
 	}
 
@@ -293,8 +284,13 @@ func (s *BillingService) ProcessTask(task models.BillingTask) error {
 		return err
 	}
 
-	// 2. PAYMENT SUCCESSFUL -> Move anchor forward
-	// We use the NextBillingDate provided by the Distributor for consistency.
+	// UPDATED: If this task is a standard recurring cycle, bypass the old internal update.
+	// The state transition is governed safely by the Consumer's database transaction wrapper.
+	if task.Action == "BILLING_RENEWAL" || task.Action == "BILLING_UPGRADE" {
+		logger.Debug("Bypassing internal update; tracking state in consumer transaction layer instead.")
+		return nil
+	}
+
 	return s.updateSubscriptionAnchor(task, logger)
 }
 
@@ -358,15 +354,6 @@ func (s *BillingService) processSettleInvoice(task models.BillingTask, logger *l
 		return err
 	}
 
-	// For demo purposes, we create a generic settlement cost based on the task amount
-	costs := &BillingCosts{
-		MembershipCosts:   0,
-		TotalCosts:        int64(task.Amount * 100),
-		InvoiceDesc:       "Settlement for outstanding balance (Demo)",
-	}
-
-	// In a real scenario, you might retrieve an existing PENDING invoice by ID
-	// Here we generate a new invoice to demonstrate the charge flow
 	invoiceID, err := strconv.ParseInt(task.InvoiceID, 10, 64)
 	if err != nil {
 		logger.WithError(err).Error("invalid invoice id in task")
@@ -378,14 +365,14 @@ func (s *BillingService) processSettleInvoice(task models.BillingTask, logger *l
 	var source string
 	var createdAt time.Time
 	err = s.db.QueryRow("SELECT cents, status, source, created_at FROM users_invoices WHERE id = ?", invoiceID).Scan(&totalCents, &status, &source, &createdAt)
-	
+
 	if err != nil {
 		logger.WithError(err).Error("could not find existing invoice for settlement")
 		return err
 	}
 
 	logger.Infof("Loaded existing invoice %d: %d cents, status: %s, source: %s, created_at: %v", invoiceID, totalCents, status, source, createdAt)
-	costs = &BillingCosts{
+	costs := &BillingCosts{
 		TotalCosts:  totalCents,
 		InvoiceDesc: fmt.Sprintf("Settlement for invoice %d", invoiceID),
 	}
@@ -396,7 +383,6 @@ func (s *BillingService) processSettleInvoice(task models.BillingTask, logger *l
 		return chargeErr
 	}
 
-	// Update workspaces_suspensions to lift any suspensions for this invoice
 	suspensionUpdateErr := s.db.QueryRow("UPDATE workspaces_suspensions SET status = 'LIFTED' WHERE invoice_id = ?", invoiceID).Err()
 	if suspensionUpdateErr != nil {
 		logger.WithError(suspensionUpdateErr).Warnf("failed to lift suspensions for invoice %d", invoiceID)
@@ -405,7 +391,6 @@ func (s *BillingService) processSettleInvoice(task models.BillingTask, logger *l
 	}
 
 	return nil
-
 }
 
 func (s *BillingService) processSettleInvoices(task models.BillingTask, logger *logrus.Entry) error {
@@ -417,7 +402,6 @@ func (s *BillingService) processSettleInvoices(task models.BillingTask, logger *
 		return err
 	}
 
-	// Calculate amount to pay (from invoice or task)
 	amountToPay := int64(task.Amount * 100)
 	if amountToPay <= 0 {
 		logger.Warnf("Invalid amount to pay for settlement: %d cents", amountToPay)
@@ -437,7 +421,6 @@ func (s *BillingService) processSettleInvoices(task models.BillingTask, logger *
 
 	logger.Infof("Successfully charged user %d for %d cents, recording payment", task.CreatorID, amountToPay)
 
-	// Record the successful payment in users_invoices_payments table
 	insertStmt, err := s.db.Prepare("INSERT INTO users_invoices_payments (`created_at`, `updated_at`, `user_id`, `workspace_id`, `cents`, `source`, `status`) VALUES (?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		logger.WithError(err).Error("failed to prepare payment insert statement")
@@ -460,7 +443,6 @@ func (s *BillingService) processSettleInvoices(task models.BillingTask, logger *
 		return err
 	}
 
-	// Parse and update invoice statuses
 	if task.InvoiceID != "" {
 		invoiceIDs := strings.Split(task.InvoiceID, ",")
 		for _, invoiceIDStr := range invoiceIDs {
@@ -480,7 +462,6 @@ func (s *BillingService) processSettleInvoices(task models.BillingTask, logger *
 				logger.Infof("Marked invoice %d as PAID", invoiceID)
 			}
 
-			// Update workspaces_suspensions to lift any suspensions for this invoice
 			suspensionUpdateErr := s.db.QueryRow("UPDATE workspaces_suspensions SET status = 'LIFTED' WHERE invoice_id = ?", invoiceID).Err()
 			if suspensionUpdateErr != nil {
 				logger.WithError(suspensionUpdateErr).Warnf("failed to lift suspensions for invoice %d", invoiceID)
@@ -488,7 +469,6 @@ func (s *BillingService) processSettleInvoices(task models.BillingTask, logger *
 				logger.Infof("Lifted suspensions for invoice %d", invoiceID)
 			}
 		}
-
 	}
 
 	logger.Infof("Payment recorded successfully for user %d, workspace %d: %d cents", task.CreatorID, task.WorkspaceID, amountToPay)
@@ -508,7 +488,6 @@ func (s *BillingService) getSubscriptionData(subscriptionID int64, logger *logru
 func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger *logrus.Entry) error {
 	logger.Infof("Processing plan upgrade for workspace %d: current plan %d -> scheduled plan %d (subscription %d, effective: %s)", task.WorkspaceID, task.CurrentPlan, task.ScheduledPlan, task.SubscriptionID, task.ScheduledEffectiveDate)
 
-	// Get billing type from subscription record using helper function
 	billingCycle, err := s.getSubscriptionData(int64(task.SubscriptionID), logger)
 	if err != nil {
 		logger.WithError(err).Error("error retrieving billing cycle from subscription")
@@ -516,15 +495,14 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 	}
 	logger.Infof("Retrieved billing cycle '%s' for subscription %d", billingCycle, task.SubscriptionID)
 
-	// Create billing task for loading billing data
 	billingTask := models.BillingTask{
-		WorkspaceID:    task.WorkspaceID,
-		CreatorID:      task.CreatorID,
-		SubscriptionID: task.SubscriptionID,
-		BillingType:    billingCycle,
+		WorkspaceID:     task.WorkspaceID,
+		CreatorID:       task.CreatorID,
+		SubscriptionID:  task.SubscriptionID,
+		BillingType:     billingCycle,
 		PaymentMethodID: task.PaymentMethodID,
-		CardLast4:      task.CardLast4,
-		CardBrand:      task.CardBrand,
+		CardLast4:       task.CardLast4,
+		CardBrand:       task.CardBrand,
 	}
 	billingData, err := s.loadBillingData(billingTask, billingTask.BillingType, logger)
 	if err != nil {
@@ -532,7 +510,6 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 	}
 	logger.Infof("Loaded billing data for workspace %d (creator: %d)", billingData.Workspace.Id, billingData.Workspace.CreatorId)
 
-	// Create invoice with upgrade fee
 	upgradeFeeInCents := task.UpgradeFee
 	logger.Infof("Upgrade fee for workspace %d: %d cents", task.WorkspaceID, upgradeFeeInCents)
 
@@ -555,8 +532,6 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 	defer insertStmt.Close()
 
 	now := time.Now()
-
-	// Get invoice due date from customizations
 	invoiceDueDays := utils.GetInvoiceDueInDays(s.customizations)
 	dueDate := now.AddDate(0, 0, invoiceDueDays)
 	sourceService := "SCHEDULER"
@@ -572,7 +547,6 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 		return err
 	}
 
-	// Create line item for upgrade proration
 	lineItemStmt, err := s.db.Prepare("INSERT INTO users_invoices_line_items (`name`, `cents`, `invoice_id`, `key_name`, `is_recurring`, `created_at`, `updated_at`) VALUES (?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return err
@@ -588,9 +562,6 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 	}
 	logger.Infof("Line item created successfully for invoice %d", invoiceID)
 
-	logger.Infof("Created upgrade invoice %d with fee %d cents for workspace %d", invoiceID, upgradeFeeInCents, task.WorkspaceID)
-
-	// Charge the upgrade fee first
 	costs := &BillingCosts{
 		MembershipCosts: int64(upgradeFeeInCents),
 		TotalCosts:      int64(upgradeFeeInCents),
@@ -603,11 +574,11 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 		logger.WithError(err).Errorf("failed to charge invoice %d for workspace %d", invoiceID, task.WorkspaceID)
 
 		_, rollbackErr := s.db.Exec(`
-			UPDATE subscriptions
-			SET scheduled_plan_id = NULL,
-				scheduled_effective_date = NULL,
-				updated_at = NOW()
-			WHERE workspace_id = ?`, task.WorkspaceID)
+            UPDATE subscriptions
+            SET scheduled_plan_id = NULL,
+                scheduled_effective_date = NULL,
+                updated_at = NOW()
+            WHERE workspace_id = ?`, task.WorkspaceID)
 		if rollbackErr != nil {
 			logger.WithError(rollbackErr).Errorf("failed to rollback scheduled_plan_id and scheduled_effective_date for workspace %d", task.WorkspaceID)
 		} else {
@@ -629,13 +600,11 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 	}
 	logger.Infof("Successfully charged invoice %d for workspace %d", invoiceID, task.WorkspaceID)
 
-	// Clean up upgrade metadata upon successful billing in a transaction
 	if _, err := time.Parse("2006-01-02", task.ScheduledEffectiveDate); err != nil {
 		logger.WithError(err).Errorf("critical: could not parse ScheduledEffectiveDate %s from task", task.ScheduledEffectiveDate)
 		return err
 	}
 
-	// Begin transaction
 	tx, err := s.db.Begin()
 	if err != nil {
 		logger.WithError(err).Error("failed to begin transaction")
@@ -656,7 +625,6 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 		return err
 	}
 
-	// Commit transaction
 	logger.Infof("Committing upgrade transaction for workspace %d", task.WorkspaceID)
 	err = tx.Commit()
 	if err != nil {
@@ -674,15 +642,12 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 }
 
 func (s *BillingService) updateSubscriptionAnchor(task models.BillingTask, logger *logrus.Entry) error {
-	// IMPORTANT: We do not calculate the date here. 
-	// We parse the string sent by the distributor to ensure the source of truth is singular.
 	nextDate, err := time.Parse("2006-01-02", task.NextBillingDate)
 	if err != nil {
 		logger.WithError(err).Errorf("critical: could not parse NextBillingDate %s from distributor", task.NextBillingDate)
 		return err
 	}
 
-	// Clean up upgrade metadata upon successful billing
 	_, err = s.db.Exec(`
         UPDATE subscriptions 
         SET next_billing_date = ?, 
@@ -747,7 +712,7 @@ func (s *BillingService) processAnnual(task models.BillingTask, logger *logrus.E
 // --- CHARGE LOGIC ---
 
 func (s *BillingService) chargeUser(costs *BillingCosts, data *BillingData, task models.BillingTask, logger *logrus.Entry) error {
-	invoiceID := int64(0) // No invoice record for this flow, so we pass 0 and handle accordingly in chargeUser
+	invoiceID := int64(0)
 	return s.chargeWithCard(invoiceID, costs, data, task, logger)
 }
 
@@ -804,8 +769,8 @@ func (s *BillingService) chargeWithCard(invoiceID int64, costs *BillingCosts, da
 	logger.Info(fmt.Sprintf("Total costs to charge on card is %d cents", cardChargeAmount))
 
 	invoice := models.UserInvoice{
-		Id:          int(invoiceID),
-		Cents:       cardChargeAmount,
+		Id:    int(invoiceID),
+		Cents: cardChargeAmount,
 		InvoiceDesc: costs.InvoiceDesc,
 	}
 
@@ -817,7 +782,6 @@ func (s *BillingService) chargeWithCard(invoiceID int64, costs *BillingCosts, da
 		invoice.CardBrand = task.CardBrand
 	}
 
-
 	chargeResult, err := s.paymentRepository.ChargeCustomer(data.BillingParams.(*utils.BillingParams), data.User, data.Workspace, &invoice)
 	if err != nil {
 		logger.WithError(err).Error(failedChargeDescription)
@@ -826,7 +790,7 @@ func (s *BillingService) chargeWithCard(invoiceID int64, costs *BillingCosts, da
 			logger.WithError(err).Error("could not publish failed payment")
 		}
 		if err := s.markInvoiceChargeFailed(invoiceID, logger); err != nil {
-		logger.WithError(err).Error("could not mark invoice charge as failed")
+			logger.WithError(err).Error("could not mark invoice charge as failed")
 			return err
 		}
 		return err
@@ -1098,25 +1062,25 @@ func (s *BillingService) createInvoice(costs *BillingCosts, data *BillingData, l
 		cents   int64
 		keyName string
 	}{
-		{"Call Tolls", costs.CallTollsCosts, "call_tolls"},
-		{"Recording Storage", costs.RecordingCosts, "recording_storage"},
-		{"Fax Services", costs.FaxCosts, "fax_services"},
-		{"DID Rental", costs.NumberRentalCosts, "did_rental"},
-		{"Membership", costs.MembershipCosts, "membership"},
+		{"Call Tolls", costs.CallTollsCosts, "CALL_TOLLS"},
+		{"Recording Storage", costs.RecordingCosts, "RECORDING_STORAGE"},
+		{"Fax Services", costs.FaxCosts, "FAX_SERVICES"},
+		{"DID Rental", costs.NumberRentalCosts, "DID_RENTAL"},
+		{"Membership", costs.MembershipCosts, "MEMBERSHIP"},
 	}
 
 	for _, item := range lineItems {
-		isRecurring := 0
-		if item.keyName == "did_rental" || item.keyName == "membership" {
-			isRecurring = 1
-		}
-		_, err := lineItemStmt.Exec(item.name, float64(item.cents), invoiceID, item.keyName, isRecurring, data.Now, data.Now)
-		if err != nil {
-			logger.WithError(err).Error("error creating invoice line item")
-		}
-	}
+        isRecurring := 0
+        if item.keyName == "DID_RENTAL" || item.keyName == "MEMBERSHIP" {
+            isRecurring = 1
+        }
+        _, err := lineItemStmt.Exec(item.name, float64(item.cents), invoiceID, item.keyName, isRecurring, data.Now, data.Now)
+        if err != nil {
+            logger.WithError(err).Error("error creating invoice line item")
+        }
+    }
 
-	return invoiceID, nil
+    return invoiceID, nil
 }
 
 // --- STATUS UPDATES ---
@@ -1136,7 +1100,20 @@ func (s *BillingService) markInvoiceChargePaid(invoiceID int64, gatewayID string
 	return err
 }
 
+// NEW: Missing compilation helper to identify transient payment/network failures vs hard declines
 func IsTransientError(err error) bool {
-    // Return true if it's a network timeout, rate limit (429), or gateway 503
-    return errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "timeout")
+	if err == nil {
+		return false
+	}
+	
+	errStr := strings.ToLower(err.Error())
+	
+	// Catches network drops, context timeouts, gateway rate limits (429), or internal service glitches (503/502)
+	return strings.Contains(errStr, "timeout") || 
+		strings.Contains(errStr, "deadline exceeded") || 
+		strings.Contains(errStr, "connection refused") || 
+		strings.Contains(errStr, "try again later") || 
+		strings.Contains(errStr, "429") || 
+		strings.Contains(errStr, "503") || 
+		strings.Contains(errStr, "502")
 }
