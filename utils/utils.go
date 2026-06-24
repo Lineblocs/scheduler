@@ -386,22 +386,24 @@ func GetInvoiceDueInDays(customizations *helpers.CustomizationSettingsKV) int {
 	return invoiceDueDays
 }
 
-func CalculateNextDate(now time.Time, cycle string, anchor int) time.Time {
+// CalculateNextDate advances the billing date while clamping to the last day of short months
+func CalculateNextDate(baseTime time.Time, cycle string, anchorDay int) time.Time {
 	if cycle == "ANNUAL" {
-		return now.AddDate(1, 0, 0)
+		return baseTime.AddDate(1, 0, 0)
 	}
 
-	// Monthly calculation with day-of-month clamping
-	// Start with the 1st of the next month
-	nextMonthFirst := time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC)
-	
-	// Find the last day of that next month
-	lastDayOfNextMonth := time.Date(nextMonthFirst.Year(), nextMonthFirst.Month()+1, 0, 0, 0, 0, 0, time.UTC).Day()
+	// Move directly to the next month, matching year and month properties
+	nextMonth := baseTime.AddDate(0, 1, 0)
+	year, month, _ := nextMonth.Date()
 
-	targetDay := anchor
-	if targetDay > lastDayOfNextMonth {
-		targetDay = lastDayOfNextMonth
+	// Find the true maximum number of days available in that target month
+	// e.g., t.Date(year, month+1, 0) gives the last day of the current month
+	lastDayOfTargetMonth := time.Date(year, month+1, 0, 0, 0, 0, 0, time.UTC).Day()
+
+	targetDay := anchorDay
+	if targetDay > lastDayOfTargetMonth {
+		targetDay = lastDayOfTargetMonth // Clamped!
 	}
 
-	return time.Date(nextMonthFirst.Year(), nextMonthFirst.Month(), targetDay, 0, 0, 0, 0, time.UTC)
+	return time.Date(year, month, targetDay, 0, 0, 0, 0, time.UTC)
 }
