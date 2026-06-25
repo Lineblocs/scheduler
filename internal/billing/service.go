@@ -266,6 +266,16 @@ func (s *BillingService) ProcessTask(task models.BillingTask) error {
 		WithField("action", task.Action).
 		WithField("amount", task.Amount)
 
+	// If free trial has ended, set is_free_trial_active to false
+	if task.FreeTrialEnded {
+		logger.Infof("Free trial ended for workspace %d, setting is_free_trial_active to false", task.WorkspaceID)
+		_, err := s.db.Exec("UPDATE subscriptions SET is_free_trial_active = 0 WHERE id = ?", task.SubscriptionID)
+		if err != nil {
+			logger.WithError(err).Errorf("failed to update free trial status for workspace %d", task.WorkspaceID)
+			return err
+		}
+	}
+
 	var err error
 
 	switch {
@@ -284,6 +294,8 @@ func (s *BillingService) ProcessTask(task models.BillingTask) error {
 	if err != nil {
 		return err
 	}
+
+
 
 	// If this task is a standard recurring cycle, bypass the old internal update.
 	// The state transition is governed safely by the Consumer's database transaction wrapper.

@@ -159,7 +159,8 @@ func runAnniversaryBillingDistributor(scheduleType string) {
         SELECT 
             s.id, s.workspace_id, w.creator_id, s.current_plan_id, 
             s.scheduled_plan_id, s.scheduled_effective_date, s.provider_subscription_id,
-            s.billing_anchor_day, s.billing_cycle, s.next_billing_date
+            s.billing_anchor_day, s.billing_cycle, s.next_billing_date,
+            s.is_free_trial_active, s.free_trial_start_date, s.free_trial_end_date
         FROM subscriptions s
         JOIN workspaces w ON s.workspace_id = w.id
         WHERE s.status = 'ACTIVE' 
@@ -181,8 +182,11 @@ func runAnniversaryBillingDistributor(scheduleType string) {
 		var schedDate sql.NullTime
 		var provSubID sql.NullString
 		var currentNextBillingDate sql.NullTime
+		var isTrialActive bool
+		var trialStartDate sql.NullTime
+		var trialEndDate sql.NullTime
 
-		if err := rows.Scan(&subID, &workspaceID, &creatorID, &currentPlanID, &schedPlanID, &schedDate, &provSubID, &anchorDay, &cycle, &currentNextBillingDate); err != nil {
+		if err := rows.Scan(&subID, &workspaceID, &creatorID, &currentPlanID, &schedPlanID, &schedDate, &provSubID, &anchorDay, &cycle, &currentNextBillingDate, &isTrialActive, &trialStartDate, &trialEndDate); err != nil {
 			continue
 		}
 
@@ -210,6 +214,11 @@ func runAnniversaryBillingDistributor(scheduleType string) {
 		}
 		nextDate := utils.CalculateNextDate(calculationBaseDate, cycle, day)
 
+		freeTrialEnded := false
+		if isTrialActive && trialEndDate.Valid && !now.Before(trialEndDate.Time) {
+			freeTrialEnded = true
+		}
+
 		task := models.BillingTask{
 			RunID:                  globalLockKey,
 			BillingType:            "ANNIVERSARY",
@@ -220,6 +229,8 @@ func runAnniversaryBillingDistributor(scheduleType string) {
 			PlanToBill:             planToBill,
 			ProviderSubscriptionID: provSubID.String,
 			NextBillingDate:        nextDate.Format("2006-01-02"),
+			IsFreeTrial:            isTrialActive,
+			FreeTrialEnded:         freeTrialEnded,
 		}
 
 		body, _ := json.Marshal(task)

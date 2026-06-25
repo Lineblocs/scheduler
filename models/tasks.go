@@ -83,6 +83,8 @@ type BillingTask struct {
     // If Action is ActionRenewal, the worker should use the PlanToBill price.
     Amount                 float64   `json:"amount"`       
     IsProrated             bool      `json:"is_prorated"`
+    IsFreeTrial            bool      `json:"is_free_trial"`
+    FreeTrialEnded            bool      `json:"free_trial_ended"`
     
     // Period details for logging and billing transparency
     BillingPeriodStart     time.Time `json:"billing_period_start"`
