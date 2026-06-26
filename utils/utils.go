@@ -407,3 +407,40 @@ func CalculateNextDate(baseTime time.Time, cycle string, anchorDay int) time.Tim
 
 	return time.Date(year, month, targetDay, 0, 0, 0, 0, time.UTC)
 }
+
+// GenerateInvoiceNumber generates a unique invoice number compliant with billing standards
+// Format: INV-{workspaceID}-{randomSuffix}
+// Example: INV-12345-ABC123
+func GenerateInvoiceNumber(workspaceID, userID string) (string, error) {
+	// Generate random suffix (6 alphanumeric characters for uniqueness)
+	randomSuffix, err := generateRandomSuffix(6)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate random suffix: %w", err)
+	}
+
+	// Construct invoice number following ISO invoice numbering standards
+	invoiceNumber := fmt.Sprintf("INV-%s-%s",
+		workspaceID,
+		randomSuffix,
+	)
+
+	return invoiceNumber, nil
+}
+
+// generateRandomSuffix generates a random alphanumeric string of specified length
+func generateRandomSuffix(length int) (string, error) {
+	const charset = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	b := make([]byte, length)
+
+	_, err := rand.Read(b)
+	if err != nil {
+		return "", err
+	}
+
+	for i := 0; i < length; i++ {
+		b[i] = charset[b[i]%byte(len(charset))]
+	}
+
+	return string(b), nil
+}
+

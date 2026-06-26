@@ -538,7 +538,7 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 		return fmt.Errorf("duplicate upgrade invoice creation attempt")
 	}
 
-	insertStmt, err := s.db.Prepare("INSERT INTO users_invoices (`cents`, `cents_including_taxes`, `call_costs`, `recording_costs`, `fax_costs`, `membership_costs`, `number_costs`, `status`, `user_id`, `workspace_id`, `created_at`, `updated_at`, `source`, `tax_metadata`, `deduplication_key`, `due_date`, `source_service`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	insertStmt, err := s.db.Prepare("INSERT INTO users_invoices (`cents`, `cents_including_taxes`, `call_costs`, `recording_costs`, `fax_costs`, `membership_costs`, `number_costs`, `status`, `user_id`, `workspace_id`, `created_at`, `updated_at`, `source`, `tax_metadata`, `deduplication_key`, `due_date`, `source_service`, `invoice_no`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return err
 	}
@@ -550,7 +550,13 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 	sourceService := "SCHEDULER"
 	taxMetadata := ""
 
-	result, err := insertStmt.Exec(upgradeFeeInCents, upgradeFeeInCents, 0, 0, 0, upgradeFeeInCents, 0, "PENDING", billingData.Workspace.CreatorId, billingData.Workspace.Id, now, now, "UPGRADE", taxMetadata, deduplicationKey, dueDate, sourceService)
+	invoiceNo, err := utils.GenerateInvoiceNumber(strconv.FormatInt(int64(billingData.Workspace.Id), 10), strconv.FormatInt(int64(billingData.Workspace.CreatorId), 10))
+	if err != nil {
+		logger.WithError(err).Error("error generating invoice number")
+		return err
+	}
+
+	result, err := insertStmt.Exec(upgradeFeeInCents, upgradeFeeInCents, 0, 0, 0, upgradeFeeInCents, 0, "PENDING", billingData.Workspace.CreatorId, billingData.Workspace.Id, now, now, "UPGRADE", taxMetadata, deduplicationKey, dueDate, sourceService, invoiceNo)
 	if err != nil {
 		return err
 	}
@@ -1045,7 +1051,7 @@ func (s *BillingService) createInvoice(costs *BillingCosts, data *BillingData, l
 		return 0, fmt.Errorf("duplicate invoice creation attempt")
 	}
 
-	insertStmt, err := s.db.Prepare("INSERT INTO users_invoices (`cents`, `cents_including_taxes`, `call_costs`, `recording_costs`, `fax_costs`, `membership_costs`, `number_costs`, `status`, `user_id`, `workspace_id`, `created_at`, `updated_at`, `source`, `tax_metadata`, `deduplication_key`, `due_date`, `source_service`) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	insertStmt, err := s.db.Prepare("INSERT INTO users_invoices (`cents`, `cents_including_taxes`, `call_costs`, `recording_costs`, `fax_costs`, `membership_costs`, `number_costs`, `status`, `user_id`, `workspace_id`, `created_at`, `updated_at`, `source`, `tax_metadata`, `deduplication_key`, `due_date`, `source_service`, `invoice_no`) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return 0, err
 	}
@@ -1054,7 +1060,11 @@ func (s *BillingService) createInvoice(costs *BillingCosts, data *BillingData, l
 	taxMetadata := utils.CreateTaxMetadata(costs.CallTollsCosts, costs.RecordingCosts, costs.FaxCosts, costs.MembershipCosts, costs.NumberRentalCosts)
 	dueDate := data.Now.Add(invoiceDueDateGracePeriod)
 	sourceService := "SCHEDULER"
-	result, err := insertStmt.Exec(costs.TotalCosts, costs.TotalCosts, costs.CallTollsCosts, costs.RecordingCosts, costs.FaxCosts, costs.MembershipCosts, costs.NumberRentalCosts, "PENDING", data.Workspace.CreatorId, data.Workspace.Id, data.Now, data.Now, "SUBSCRIPTION", taxMetadata, deduplicationKey, dueDate, sourceService)
+	invoiceNo, err := utils.GenerateInvoiceNumber(fmt.Sprintf("%d", data.Workspace.Id), fmt.Sprintf("%d", data.Workspace.CreatorId))
+	if err != nil {
+		return 0, err
+	}
+	result, err := insertStmt.Exec(costs.TotalCosts, costs.TotalCosts, costs.CallTollsCosts, costs.RecordingCosts, costs.FaxCosts, costs.MembershipCosts, costs.NumberRentalCosts, "PENDING", data.Workspace.CreatorId, data.Workspace.Id, data.Now, data.Now, "SUBSCRIPTION", taxMetadata, deduplicationKey, dueDate, sourceService, invoiceNo)
 	if err != nil {
 		return 0, err
 	}
