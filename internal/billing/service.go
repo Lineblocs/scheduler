@@ -538,7 +538,7 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 		return fmt.Errorf("duplicate upgrade invoice creation attempt")
 	}
 
-	insertStmt, err := s.db.Prepare("INSERT INTO users_invoices (`cents`, `cents_including_taxes`, `call_costs`, `recording_costs`, `fax_costs`, `membership_costs`, `number_costs`, `status`, `user_id`, `workspace_id`, `created_at`, `updated_at`, `source`, `tax_metadata`, `deduplication_key`, `due_date`, `source_service`, `invoice_no`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	insertStmt, err := s.db.Prepare("INSERT INTO users_invoices (`cents`, `cents_including_taxes`, `call_costs`, `recording_costs`, `fax_costs`, `membership_costs`, `number_costs`, `status`, `user_id`, `workspace_id`, `created_at`, `updated_at`, `source`, `tax_metadata`, `deduplication_key`, `due_date`, `source_service`, `invoice_no`, `invoice_type`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return err
 	}
@@ -556,7 +556,7 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 		return err
 	}
 
-	result, err := insertStmt.Exec(upgradeFeeInCents, upgradeFeeInCents, 0, 0, 0, upgradeFeeInCents, 0, "PENDING", billingData.Workspace.CreatorId, billingData.Workspace.Id, now, now, "UPGRADE", taxMetadata, deduplicationKey, dueDate, sourceService, invoiceNo)
+	result, err := insertStmt.Exec(upgradeFeeInCents, upgradeFeeInCents, 0, 0, 0, upgradeFeeInCents, 0, "PENDING", billingData.Workspace.CreatorId, billingData.Workspace.Id, now, now, "UPGRADE", taxMetadata, deduplicationKey, dueDate, sourceService, invoiceNo, "ONE_TIME_UPGRADE")
 	if err != nil {
 		return err
 	}
@@ -1051,7 +1051,7 @@ func (s *BillingService) createInvoice(costs *BillingCosts, data *BillingData, l
 		return 0, fmt.Errorf("duplicate invoice creation attempt")
 	}
 
-	insertStmt, err := s.db.Prepare("INSERT INTO users_invoices (`cents`, `cents_including_taxes`, `call_costs`, `recording_costs`, `fax_costs`, `membership_costs`, `number_costs`, `status`, `user_id`, `workspace_id`, `created_at`, `updated_at`, `source`, `tax_metadata`, `deduplication_key`, `due_date`, `source_service`, `invoice_no`) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	insertStmt, err := s.db.Prepare("INSERT INTO users_invoices (`cents`, `cents_including_taxes`, `call_costs`, `recording_costs`, `fax_costs`, `membership_costs`, `number_costs`, `status`, `user_id`, `workspace_id`, `created_at`, `updated_at`, `source`, `tax_metadata`, `deduplication_key`, `due_date`, `source_service`, `invoice_no`, `invoice_type`) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return 0, err
 	}
@@ -1064,7 +1064,7 @@ func (s *BillingService) createInvoice(costs *BillingCosts, data *BillingData, l
 	if err != nil {
 		return 0, err
 	}
-	result, err := insertStmt.Exec(costs.TotalCosts, costs.TotalCosts, costs.CallTollsCosts, costs.RecordingCosts, costs.FaxCosts, costs.MembershipCosts, costs.NumberRentalCosts, "PENDING", data.Workspace.CreatorId, data.Workspace.Id, data.Now, data.Now, "SUBSCRIPTION", taxMetadata, deduplicationKey, dueDate, sourceService, invoiceNo)
+	result, err := insertStmt.Exec(costs.TotalCosts, costs.TotalCosts, costs.CallTollsCosts, costs.RecordingCosts, costs.FaxCosts, costs.MembershipCosts, costs.NumberRentalCosts, "PENDING", data.Workspace.CreatorId, data.Workspace.Id, data.Now, data.Now, "SUBSCRIPTION", taxMetadata, deduplicationKey, dueDate, sourceService, invoiceNo, "RECURRING_BILL")
 	if err != nil {
 		return 0, err
 	}
