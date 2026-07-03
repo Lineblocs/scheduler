@@ -264,6 +264,136 @@ func runAnniversaryBillingDistributor(scheduleType string) {
 	log.Printf("[%s] Finished. Total Queued: %d", scheduleType, count)
 }
 
+func runPlanMigrationsDistributor() {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	defer cancel()
+
+	now := time.Now().UTC()
+	lockKeySuffix := now.Format("2006-01-02")
+	globalLockKey := fmt.Sprintf("plan_migration_run_lock:%s", lockKeySuffix)
+
+	locked, err := rdb.SetNX(ctx, globalLockKey, "running", 23*time.Hour).Result()
+	if err != nil || !locked {
+		log.Printf("[PLAN_MIGRATION] Skip: Lock %s held by another instance.", globalLockKey)
+		return
+	}
+
+	ch, err := amqpConn.Channel()
+	if err != nil {
+		log.Printf("[PLAN_MIGRATION] Channel allocation failed: %v", err)
+		return
+	}
+	defer ch.Close()
+
+	_ = ch.Confirm(false)
+	confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 1))
+	q, _ := ch.QueueDeclare("plan_upgrades_events", true, false, false, false, nil)
+
+	query := `
+        SELECT id, workspace_id, scheduled_plan_id
+        FROM subscriptions
+        WHERE status = 'ACTIVE' 
+          AND scheduled_plan_id IS NOT NULL 
+          AND scheduled_effective_date IS NOT NULL 
+          AND DATE(scheduled_effective_date) <= ?`
+
+	rows, err := db.QueryContext(ctx, query, now.Format("2006-01-02"))
+	if err != nil {
+		log.Printf("[PLAN_MIGRATION] DB Query Error: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		var subID, workspaceID, scheduledPlanID int
+
+		if err := rows.Scan(&subID, &workspaceID, &scheduledPlanID); err != nil {
+			log.Printf("[PLAN_MIGRATION] Scan error: %v", err)
+			continue
+		}
+
+		dedupeKey := fmt.Sprintf("queued:plan_migration:%d:%s", workspaceID, lockKeySuffix)
+		isNew, _ := rdb.SetNX(ctx, dedupeKey, "true", 24*time.Hour).Result()
+		if !isNew {
+			continue
+		}
+
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			log.Printf("[PLAN_MIGRATION] Failed to begin tx for sub %d: %v", subID, err)
+			rdb.Del(ctx, dedupeKey)
+			continue
+		}
+
+		updateQuery := `
+			UPDATE subscriptions 
+			SET current_plan_id = scheduled_plan_id, 
+			    scheduled_plan_id = NULL, 
+			    scheduled_effective_date = NULL 
+			WHERE id = ?`
+		
+		_, err = tx.ExecContext(ctx, updateQuery, subID)
+		if err != nil {
+			log.Printf("[PLAN_MIGRATION] Failed to update sub %d: %v", subID, err)
+			tx.Rollback()
+			rdb.Del(ctx, dedupeKey)
+			continue
+		}
+
+		event := map[string]interface{}{
+			"workspace_id": workspaceID,
+			"subscription_id": subID,
+			"new_plan_id": scheduledPlanID,
+			"event": "plan_upgrade_successful",
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+		}
+
+		body, _ := json.Marshal(event)
+		err = ch.PublishWithContext(ctx, "", q.Name, false, false, amqp.Publishing{
+			DeliveryMode: amqp.Persistent,
+			ContentType:  "application/json",
+			Body:         body,
+		})
+
+		if err != nil {
+			log.Printf("[PLAN_MIGRATION] Failed to publish event for sub %d: %v", subID, err)
+			tx.Rollback()
+			rdb.Del(ctx, dedupeKey)
+			continue
+		}
+
+		waitConf:
+		select {
+		case c := <-confirms:
+			if c.Ack {
+				err = tx.Commit()
+				if err != nil {
+					log.Printf("[PLAN_MIGRATION] Failed to commit tx for sub %d: %v", subID, err)
+				} else {
+					count++
+				}
+			} else {
+				log.Printf("[PLAN_MIGRATION] Nack on event for sub %d", subID)
+				tx.Rollback()
+				rdb.Del(ctx, dedupeKey)
+			}
+		case <-time.After(5 * time.Second):
+			log.Printf("[PLAN_MIGRATION] Timeout waiting for confirm on sub %d", subID)
+			tx.Rollback()
+			rdb.Del(ctx, dedupeKey)
+			goto skip
+		}
+		skip:
+	}
+
+	if err = rows.Err(); err != nil {
+		log.Printf("[PLAN_MIGRATION] CRITICAL: Row stream interrupted: %v", err)
+	}
+
+	log.Printf("[PLAN_MIGRATION] Finished. Total Upgraded: %d", count)
+}
+
 func runBillingDistributor(scheduleType string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()
