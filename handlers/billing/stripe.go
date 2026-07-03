@@ -49,6 +49,9 @@ func (hndl *StripeBillingHandler) ChargeCustomer(user *helpers.User, workspace *
     var paymentMethodId string
     var cardLast4 string
     var cardBrand string
+    var backupPaymentMethodId string
+    var backupCardLast4 string
+    var backupCardBrand string
 
     // Use the attributes directly from the invoice object
     if invoice.PaymentMethodId != "" {
@@ -72,6 +75,22 @@ func (hndl *StripeBillingHandler) ChargeCustomer(user *helpers.User, workspace *
         helpers.Log(logrus.InfoLevel, fmt.Sprintf("Successfully retrieved card - ID: %d, Last4: %s, Brand: %s", id, cardLast4, cardBrand))
     } else {
         helpers.Log(logrus.InfoLevel, fmt.Sprintf("Using PaymentMethodId from invoice: %s", paymentMethodId))
+    }
+
+    // Attempt to retrieve backup payment method in case primary fails
+    if invoice.PaymentMethodId == "" {
+        backupRow := db.QueryRow("SELECT id, stripe_payment_method_id, last_4, issuer FROM users_cards WHERE `workspace_id`=? AND `backup` = 1", workspace.Id)
+        backupErr := backupRow.Scan(&id, &backupPaymentMethodId, &backupCardLast4, &backupCardBrand)
+        if backupErr != nil {
+            if backupErr != sql.ErrNoRows {
+                helpers.Log(logrus.WarnLevel, fmt.Sprintf("Error querying backup payment method for workspace %d: %v", workspace.Id, backupErr))
+            }
+            // No backup method available, which is okay
+            backupPaymentMethodId = ""
+            helpers.Log(logrus.InfoLevel, fmt.Sprintf("No backup payment method found for workspace %d", workspace.Id))
+        } else {
+            helpers.Log(logrus.InfoLevel, fmt.Sprintf("Backup payment method available for workspace %d - ID: %d, Last4: %s, Brand: %s", workspace.Id, id, backupCardLast4, backupCardBrand))
+        }
     }
 
     domain := os.Getenv("DEPLOYMENT_DOMAIN")
@@ -105,7 +124,28 @@ func (hndl *StripeBillingHandler) ChargeCustomer(user *helpers.User, workspace *
 
     if err != nil {
         helpers.Log(logrus.ErrorLevel, fmt.Sprintf("Stripe Charge Failed: %v", err))
-        return nil, err
+
+        // Try backup payment method if primary failed and backup exists
+        if backupPaymentMethodId != "" {
+            helpers.Log(logrus.InfoLevel, fmt.Sprintf("Attempting charge with backup payment method for workspace %d", workspace.Id))
+            
+            params.PaymentMethod = stripe.String(backupPaymentMethodId)
+            idempotencyKey := createIdempotencyKey(workspace.Id, amountCents)
+            params.SetIdempotencyKey(idempotencyKey)
+            
+            res, err = paymentintent.New(params)
+            if err != nil {
+                helpers.Log(logrus.ErrorLevel, fmt.Sprintf("Stripe Charge Failed with backup method: %v", err))
+                return nil, err
+            }
+            
+            paymentMethodId = backupPaymentMethodId
+            cardLast4 = backupCardLast4
+            cardBrand = backupCardBrand
+            helpers.Log(logrus.InfoLevel, fmt.Sprintf("Backup payment method succeeded for workspace %d", workspace.Id))
+        } else {
+            return nil, err
+        }
     }
 
     helpers.Log(logrus.InfoLevel, fmt.Sprintf("Stripe PaymentIntent processed. ID: %s Status: %s", res.ID, res.Status))

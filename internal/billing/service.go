@@ -1,7 +1,6 @@
 package billing
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -568,7 +567,7 @@ func (s *BillingService) HandleUpgrade(task models.WorkspaceUpgradeTask, logger 
 
 	lineItemStmt, err := s.db.Prepare("INSERT INTO users_invoices_line_items (`name`, `cents`, `invoice_id`, `key_name`, `is_recurring`, `created_at`, `updated_at`) VALUES (?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
-		return invoiceID, err
+		return err
 	}
 	defer lineItemStmt.Close()
 
@@ -728,6 +727,7 @@ func (s *BillingService) processAnnual(task models.BillingTask, logger *logrus.E
 	return s.chargeInvoice(invoiceID, costs, billingData, task, logger)
 }
 
+
 // --- CHARGE LOGIC ---
 
 func (s *BillingService) chargeUser(costs *BillingCosts, data *BillingData, task models.BillingTask, logger *logrus.Entry) error {
@@ -742,6 +742,38 @@ func (s *BillingService) chargeInvoice(invoiceID int64, costs *BillingCosts, dat
 		return s.chargeWithCredits(invoiceID, costs, data, task, logger)
 	}
 	return s.chargeWithCard(invoiceID, costs, data, task, logger)
+}
+
+func (s *BillingService) getPaymentMethods(workspaceID int) (map[string]string, error) {
+	result := make(map[string]string)
+
+	// Get primary payment method
+	primaryRow := s.db.QueryRow("SELECT stripe_payment_method_id FROM users_cards WHERE workspace_id = ? AND primary = 1", workspaceID)
+	var primaryMethodID string
+	primaryErr := primaryRow.Scan(&primaryMethodID)
+	if primaryErr != nil && primaryErr != sql.ErrNoRows {
+		return nil, primaryErr
+	}
+	if primaryErr == nil {
+		result["primary_method_id"] = primaryMethodID
+	} else {
+		result["primary_method_id"] = ""
+	}
+
+	// Get backup payment method
+	backupRow := s.db.QueryRow("SELECT stripe_payment_method_id FROM users_cards WHERE workspace_id = ? AND backup = 1", workspaceID)
+	var backupMethodID string
+	backupErr := backupRow.Scan(&backupMethodID)
+	if backupErr != nil && backupErr != sql.ErrNoRows {
+		return nil, backupErr
+	}
+	if backupErr == nil {
+		result["backup_method_id"] = backupMethodID
+	} else {
+		result["backup_method_id"] = ""
+	}
+
+	return result, nil
 }
 
 func (s *BillingService) chargeWithCredits(invoiceID int64, costs *BillingCosts, data *BillingData, task models.BillingTask, logger *logrus.Entry) error {
@@ -783,6 +815,17 @@ func (s *BillingService) chargeCreditsOnly(invoiceID int64, totalCosts int64, da
 
 func (s *BillingService) chargeWithCard(invoiceID int64, costs *BillingCosts, data *BillingData, task models.BillingTask, logger *logrus.Entry) error {
 	logger.Info("Charging recurringly with card")
+
+	// Get available payment methods
+	paymentMethods, err := s.getPaymentMethods(task.WorkspaceID)
+	if err != nil {
+		logger.WithError(err).Error("could not retrieve available payment methods")
+		return err
+	}
+
+	// Include payment methods in billing task
+	task.PaymentMethodID = paymentMethods["primary_method_id"]
+	task.BackupPaymentMethodID = paymentMethods["backup_method_id"]
 
 	cardChargeAmount := int(math.Ceil(float64(costs.TotalCosts)))
 	logger.Info(fmt.Sprintf("Total costs to charge on card is %d cents", cardChargeAmount))
@@ -1122,6 +1165,8 @@ func (s *BillingService) markInvoiceChargePaid(invoiceID int64, gatewayID string
 	_, err = s.db.Exec("UPDATE users_invoices SET status = 'PAID', source ='CARD', cents_collected = ?, confirmation_number = ?, payment_gateway_id = ?, paid_date = ? WHERE id = ?", totalCosts, confirmNumber, gatewayID, paidDate, invoiceID)
 	return err
 }
+
+
 
 // Missing compilation helper to identify transient payment/network failures vs hard declines
 func IsTransientError(err error) bool {
