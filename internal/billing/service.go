@@ -703,7 +703,17 @@ func (s *BillingService) processMonthly(task models.BillingTask, logger *logrus.
 
 	_ = s.publishInvoiceGenerated(task, invoiceID, logger)
 
-	return s.chargeInvoice(invoiceID, costs, billingData, task, logger)
+	chargeErr := s.chargeInvoice(invoiceID, costs, billingData, task, logger)
+	if chargeErr != nil {
+		logger.WithError(chargeErr).Error("failed to charge invoice")
+		suspendErr := s.suspendWorkspace(task.WorkspaceID, int(invoiceID), "Failed to charge invoice", "SUSPENDED")
+		if suspendErr != nil {
+			logger.WithError(suspendErr).Error("failed to suspend workspace after charge failure")
+		}
+		return chargeErr
+	}
+
+	return nil
 }
 
 func (s *BillingService) processAnnual(task models.BillingTask, logger *logrus.Entry) error {
@@ -724,7 +734,17 @@ func (s *BillingService) processAnnual(task models.BillingTask, logger *logrus.E
 
 	_ = s.publishInvoiceGenerated(task, invoiceID, logger)
 
-	return s.chargeInvoice(invoiceID, costs, billingData, task, logger)
+	chargeErr := s.chargeInvoice(invoiceID, costs, billingData, task, logger)
+	if chargeErr != nil {
+		logger.WithError(chargeErr).Error("failed to charge invoice")
+		suspendErr := s.suspendWorkspace(task.WorkspaceID, int(invoiceID), "Failed to charge invoice", "SUSPENDED")
+		if suspendErr != nil {
+			logger.WithError(suspendErr).Error("failed to suspend workspace after charge failure")
+		}
+		return chargeErr
+	}
+
+	return nil
 }
 
 
