@@ -39,6 +39,12 @@ type BillingCosts struct {
 	InvoiceDesc       string
 }
 
+type Invoice struct {
+	Id       int64
+	DueDate  time.Time
+	Amount   int64
+}
+
 type BillingService struct {
 	db                  *sql.DB
 	workspaceRepository repository.WorkspaceRepository
@@ -320,17 +326,17 @@ func (s *BillingService) processImmediateProrated(task models.BillingTask, logge
 		InvoiceDesc:     fmt.Sprintf("Initial prorated charge for %s plan", task.BillingType),
 	}
 
-	invoiceID, err := s.createInvoice(costs, billingData, logger)
+	invoice, err := s.createInvoice(costs, billingData, logger)
 	if err != nil {
 		return err
 	}
 
-	_ = s.publishInvoiceGenerated(task, invoiceID, logger)
+	_ = s.publishInvoiceGenerated(task, invoice.Id, logger)
 
-	err = s.chargeInvoice(invoiceID, costs, billingData, task, logger)
+	err = s.chargeInvoice(invoice.Id, costs, billingData, task, logger)
 	if err != nil {
 		logger.WithError(err).Error("failed to charge invoice for prorated billing")
-		err = s.suspendWorkspace(task.WorkspaceID, int(invoiceID), "Failed to charge invoice", "SUSPENDED")
+		err = s.suspendWorkspace(task.WorkspaceID, int(invoice.Id), "Failed to charge invoice", "SUSPENDED")
 		logger.WithError(err).Error("failed to suspend workspace after charge failure")
 
 		return err
@@ -696,19 +702,23 @@ func (s *BillingService) processMonthly(task models.BillingTask, logger *logrus.
 		return err
 	}
 
-	invoiceID, err := s.createInvoice(costs, billingData, logger)
+	invoice, err := s.createInvoice(costs, billingData, logger)
 	if err != nil {
 		return err
 	}
 
-	_ = s.publishInvoiceGenerated(task, invoiceID, logger)
+	_ = s.publishInvoiceGenerated(task, invoice.Id, logger)
 
-	chargeErr := s.chargeInvoice(invoiceID, costs, billingData, task, logger)
+	chargeErr := s.chargeInvoice(invoice.Id, costs, billingData, task, logger)
 	if chargeErr != nil {
 		logger.WithError(chargeErr).Error("failed to charge invoice")
-		suspendErr := s.suspendWorkspace(task.WorkspaceID, int(invoiceID), "Failed to charge invoice", "SUSPENDED")
-		if suspendErr != nil {
-			logger.WithError(suspendErr).Error("failed to suspend workspace after charge failure")
+		
+		// Check if invoice due_date is past today before suspending
+		if invoice.DueDate.Before(time.Now()) {
+			suspendErr := s.suspendWorkspace(task.WorkspaceID, int(invoice.Id), "Failed to charge invoice", "SUSPENDED")
+			if suspendErr != nil {
+				logger.WithError(suspendErr).Error("failed to suspend workspace after charge failure")
+			}
 		}
 		return chargeErr
 	}
@@ -727,19 +737,23 @@ func (s *BillingService) processAnnual(task models.BillingTask, logger *logrus.E
 		return err
 	}
 
-	invoiceID, err := s.createInvoice(costs, billingData, logger)
+	invoice, err := s.createInvoice(costs, billingData, logger)
 	if err != nil {
 		return err
 	}
 
-	_ = s.publishInvoiceGenerated(task, invoiceID, logger)
+	_ = s.publishInvoiceGenerated(task, invoice.Id, logger)
 
-	chargeErr := s.chargeInvoice(invoiceID, costs, billingData, task, logger)
+	chargeErr := s.chargeInvoice(invoice.Id, costs, billingData, task, logger)
 	if chargeErr != nil {
 		logger.WithError(chargeErr).Error("failed to charge invoice")
-		suspendErr := s.suspendWorkspace(task.WorkspaceID, int(invoiceID), "Failed to charge invoice", "SUSPENDED")
-		if suspendErr != nil {
-			logger.WithError(suspendErr).Error("failed to suspend workspace after charge failure")
+		
+		// Check if invoice due_date is past today before suspending
+		if invoice.DueDate.Before(time.Now()) {
+			suspendErr := s.suspendWorkspace(task.WorkspaceID, int(invoice.Id), "Failed to charge invoice", "SUSPENDED")
+			if suspendErr != nil {
+				logger.WithError(suspendErr).Error("failed to suspend workspace after charge failure")
+			}
 		}
 		return chargeErr
 	}
@@ -1103,20 +1117,20 @@ func (s *BillingService) processFaxes(data *BillingData, costs *BillingCosts, st
 	return nil
 }
 
-func (s *BillingService) createInvoice(costs *BillingCosts, data *BillingData, logger *logrus.Entry) (int64, error) {
+func (s *BillingService) createInvoice(costs *BillingCosts, data *BillingData, logger *logrus.Entry) (*Invoice, error) {
 	deduplicationKey := helpers.GenerateDeduplicationKey("INVOICE", data.BillingPeriodStart.Year(), int(data.BillingPeriodStart.Month()), data.BillingPeriodStart.Day(), data.Workspace.Id, 0)
 	var count int
 	err := s.db.QueryRow("SELECT COUNT(*) FROM users_invoices WHERE deduplication_key = ?", deduplicationKey).Scan(&count)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	if count > 0 {
-		return 0, fmt.Errorf("duplicate invoice creation attempt")
+		return nil, fmt.Errorf("duplicate invoice creation attempt")
 	}
 
 	insertStmt, err := s.db.Prepare("INSERT INTO users_invoices (`cents`, `cents_including_taxes`, `call_costs`, `recording_costs`, `fax_costs`, `membership_costs`, `number_costs`, `status`, `user_id`, `workspace_id`, `created_at`, `updated_at`, `source`, `tax_metadata`, `deduplication_key`, `due_date`, `source_service`, `invoice_no`, `invoice_type`) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	defer insertStmt.Close()
 
@@ -1125,21 +1139,21 @@ func (s *BillingService) createInvoice(costs *BillingCosts, data *BillingData, l
 	sourceService := "SCHEDULER"
 	invoiceNo, err := utils.GenerateInvoiceNumber(fmt.Sprintf("%d", data.Workspace.Id), fmt.Sprintf("%d", data.Workspace.CreatorId))
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	result, err := insertStmt.Exec(costs.TotalCosts, costs.TotalCosts, costs.CallTollsCosts, costs.RecordingCosts, costs.FaxCosts, costs.MembershipCosts, costs.NumberRentalCosts, "PENDING", data.Workspace.CreatorId, data.Workspace.Id, data.Now, data.Now, "SUBSCRIPTION", taxMetadata, deduplicationKey, dueDate, sourceService, invoiceNo, "RECURRING_BILL")
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	invoiceID, err := result.LastInsertId()
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	lineItemStmt, err := s.db.Prepare("INSERT INTO users_invoices_line_items (`name`, `cents`, `invoice_id`, `key_name`, `is_recurring`, `created_at`, `updated_at`) VALUES (?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
-		return invoiceID, err
+		return nil, err
 	}
 	defer lineItemStmt.Close()
 
@@ -1166,7 +1180,11 @@ func (s *BillingService) createInvoice(costs *BillingCosts, data *BillingData, l
 		}
 	}
 
-	return invoiceID, nil
+	return &Invoice{
+		Id:       invoiceID,
+		DueDate:  dueDate,
+		Amount:   costs.TotalCosts,
+	}, nil
 }
 
 // --- STATUS UPDATES ---

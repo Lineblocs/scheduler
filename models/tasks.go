@@ -91,6 +91,7 @@ type BillingTask struct {
     BillingPeriodStart     time.Time `json:"billing_period_start"`
     BillingPeriodEnd       time.Time `json:"billing_period_end"`
     NextBillingDate        string    `json:"next_billing_date"`
+    DueDate        string    `json:"due_date"`
 }
 
 type RecordingTask struct {

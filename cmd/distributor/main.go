@@ -496,7 +496,11 @@ func runWorkspaceSuspensionsDistributor() {
         FROM workspaces w
         JOIN users_invoices i ON i.workspace_id = w.id
         WHERE i.status != 'PAID' 
-          AND i.due_date >= ?
+          AND i.due_date <= ?
+          AND NOT EXISTS (
+            SELECT 1 FROM workspaces_suspensions 
+            WHERE invoice_id = i.id AND status = 'ACTIVE'
+          )
         GROUP BY w.id, i.id
         ORDER BY w.id`
 
