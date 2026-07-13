@@ -97,7 +97,7 @@ func main() {
 		if task.CancelPlan {
 			log.Printf("Plan cancellation requested for subscription %d (workspace %d). Updating status to CANCELLED.", task.SubscriptionID, task.WorkspaceID)
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			_, err := db.ExecContext(ctx, `UPDATE subscriptions SET status = 'CANCELLED' WHERE id = ?`, task.SubscriptionID)
+			_, err := db.ExecContext(ctx, `UPDATE subscriptions SET status = 'CANCELLED', cancel_at_period_end = 0 WHERE id = ?`, task.SubscriptionID)
 			cancel()
 			if err != nil {
 				log.Printf("Error cancelling subscription %d: %v", task.SubscriptionID, err)
