@@ -73,6 +73,7 @@ type BillingTask struct {
     SubscriptionID         int       `json:"subscription_id"`
     Action                 string    `json:"action"`       
     PlanToBill             int       `json:"plan_to_bill"` 
+    CancelPlan             int       `json:"cancel_plan"` 
     ProviderSubscriptionID string    `json:"provider_subscription_id"`
     InvoiceID              string    `json:"invoice_id"`
     PaymentMethodID        string    `json:"payment_method_id"`

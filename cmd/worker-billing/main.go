@@ -93,6 +93,22 @@ func main() {
 			continue
 		}
 
+		// STEP 0: Handle plan cancellation requests
+		if task.CancelPlan {
+			log.Printf("Plan cancellation requested for subscription %d (workspace %d). Updating status to CANCELLED.", task.SubscriptionID, task.WorkspaceID)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			_, err := db.ExecContext(ctx, `UPDATE subscriptions SET status = 'CANCELLED' WHERE id = ?`, task.SubscriptionID)
+			cancel()
+			if err != nil {
+				log.Printf("Error cancelling subscription %d: %v", task.SubscriptionID, err)
+				d.Nack(false, true)
+				continue
+			}
+			log.Printf("SUCCESS: Subscription %d cancelled for workspace %d.", task.SubscriptionID, task.WorkspaceID)
+			d.Ack(false)
+			continue
+		}
+
 		// Wrap execution loop in a defined lifecycle timeout context to prevent leaks
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 

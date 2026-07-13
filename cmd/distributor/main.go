@@ -160,7 +160,8 @@ func runAnniversaryBillingDistributor(scheduleType string) {
             s.id, s.workspace_id, w.creator_id, s.current_plan_id, 
             s.scheduled_plan_id, s.scheduled_effective_date, s.provider_subscription_id,
             s.billing_anchor_day, s.billing_cycle, s.next_billing_date,
-            s.is_free_trial_active, s.free_trial_start_date, s.free_trial_end_date
+            s.is_free_trial_active, s.free_trial_start_date, s.free_trial_end_date,
+            s.cancel_at_period_end
         FROM subscriptions s
         JOIN workspaces w ON s.workspace_id = w.id
         WHERE s.status = 'ACTIVE' 
@@ -185,8 +186,9 @@ func runAnniversaryBillingDistributor(scheduleType string) {
         var isTrialActive bool
         var trialStartDate sql.NullTime
         var trialEndDate sql.NullTime
+        var cancelAtPeriodEnd int
 
-        if err := rows.Scan(&subID, &workspaceID, &creatorID, &currentPlanID, &schedPlanID, &schedDate, &provSubID, &anchorDay, &cycle, &currentNextBillingDate, &isTrialActive, &trialStartDate, &trialEndDate); err != nil {
+        if err := rows.Scan(&subID, &workspaceID, &creatorID, &currentPlanID, &schedPlanID, &schedDate, &provSubID, &anchorDay, &cycle, &currentNextBillingDate, &isTrialActive, &trialStartDate, &trialEndDate, &cancelAtPeriodEnd); err != nil {
             continue
         }
 
@@ -231,6 +233,7 @@ func runAnniversaryBillingDistributor(scheduleType string) {
             NextBillingDate:        nextDate.Format("2006-01-02"),
             IsFreeTrial:            isTrialActive,
             FreeTrialEnded:         freeTrialEnded,
+            CancelPlan:             cancelAtPeriodEnd == 1,
         }
 
         body, _ := json.Marshal(task)
