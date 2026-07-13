@@ -221,6 +221,11 @@ func runAnniversaryBillingDistributor(scheduleType string) {
             freeTrialEnded = true
         }
 
+        cancelPlan := false
+        if cancelAtPeriodEnd == 1 {
+            cancelPlan = true
+        }
+
         task := models.BillingTask{
             RunID:                  globalLockKey,
             BillingType:            "ANNIVERSARY",
@@ -233,7 +238,7 @@ func runAnniversaryBillingDistributor(scheduleType string) {
             NextBillingDate:        nextDate.Format("2006-01-02"),
             IsFreeTrial:            isTrialActive,
             FreeTrialEnded:         freeTrialEnded,
-            CancelPlan:             cancelAtPeriodEnd == 1,
+            CancelPlan:             cancelPlan,
         }
 
         body, _ := json.Marshal(task)
