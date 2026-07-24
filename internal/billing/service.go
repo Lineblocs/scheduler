@@ -940,7 +940,7 @@ func (s *BillingService) chargeInvoice(invoiceID int64, costs *BillingCosts, dat
 				CreatedAt   time.Time
 			}{
 				WorkspaceID: task.WorkspaceID,
-				Source:      "SCHEDULER",
+				Source:      "RECURRING_CHARGE",
 				CreatedAt:   time.Now(),
 			}
 
