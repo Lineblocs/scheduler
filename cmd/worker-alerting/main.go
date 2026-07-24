@@ -157,7 +157,7 @@ func (h *LowBalanceAlertHandler) Handle(ctx context.Context, task AlertTask) err
 
 	// 2. Dispatch Billing Task for Top-Up
 	billingPayload := map[string]interface{}{
-		"action":       "ADD_CREDITS",
+		"action":       "RELOAD_CREDITS",
 		"workspace_id": task.WorkspaceID,
 	}
 	billingBytes, err := json.Marshal(billingPayload)

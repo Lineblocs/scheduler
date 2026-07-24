@@ -322,6 +322,8 @@ func (s *BillingService) ProcessTask(task models.BillingTask) error {
 		err = s.processSettleInvoices(task, logger)
 	case task.Action == "ADD_CREDITS":
 		err = s.processAddCredits(task, logger)
+	case task.Action == "RELOAD_CREDITS":
+		err = s.processReloadCredits(task, logger)
 	case task.BillingType == "ANNUAL" && (task.Action == "BILLING_RENEWAL" || task.Action == "BILLING_UPGRADE"):
 		err = s.processAnnual(task, logger)
 	case task.BillingType == "MONTHLY" && (task.Action == "BILLING_RENEWAL" || task.Action == "BILLING_UPGRADE"):
@@ -579,21 +581,70 @@ func (s *BillingService) processAddCredits(task models.BillingTask, logger *logr
 	}
 	defer insertStmt.Close()
 
-	// Insert credits record with balance equal to the amount added
-	result, err := insertStmt.Exec(now, now, task.CreatorID, amountInCents, "UI_PAYMENT", amountInCents, primaryCardID, "APPROVED", task.WorkspaceID, deduplicationKey)
+	result, err := insertStmt.Exec(now, now, task.CreatorID, amountInCents, "WEB", 0, primaryCardID, "APPROVED", task.WorkspaceID, deduplicationKey)
 	if err != nil {
 		logger.WithError(err).Error("failed to insert credits record")
 		return err
 	}
+	creditID, _ := result.LastInsertId()
+	logger.Infof("Inserted credits record %d for user %d", creditID, task.CreatorID)
+	return nil
+}
 
-	creditID, err := result.LastInsertId()
+func (s *BillingService) processReloadCredits(task models.BillingTask, logger *logrus.Entry) error {
+	logger.Infof("Processing credit reload for workspace %d", task.WorkspaceID)
+	
+	// Query workspace topup amount
+	var amountDollars float64
+	err := s.db.QueryRow("SELECT auto_topup_amount FROM workspaces WHERE id = ?", task.WorkspaceID).Scan(&amountDollars)
 	if err != nil {
-		logger.WithError(err).Error("failed to retrieve credit record id")
+		logger.WithError(err).Error("failed to get topup amount")
 		return err
 	}
 
-	logger.Infof("Credits added successfully for user %d, workspace %d: %d cents (credit id: %d)", task.CreatorID, task.WorkspaceID, amountInCents, creditID)
-	return nil
+	amount := int64(amountDollars * 100)
+	
+	logger.Infof("Topup amount is %d cents", amount)
+	
+	// Query user primary card
+	var cardID int64
+	var stripeCardID string
+	err = s.db.QueryRow("SELECT id, stripe_card_id FROM users_cards WHERE workspace_id = ? AND is_primary = 1", task.WorkspaceID).Scan(&cardID, &stripeCardID)
+	if err != nil {
+		logger.WithError(err).Error("failed to get primary card")
+		return err
+	}
+	
+	billingData, err := s.loadBillingData(task, task.BillingType, logger)
+	if err != nil {
+		logger.WithError(err).Error("failed to load billing data for reload credits")
+		return err
+	}
+	
+	costs := &BillingCosts{
+		TotalCosts:  amount,
+		InvoiceDesc: fmt.Sprintf("Credit reload for workspace %d", task.WorkspaceID),
+	}
+
+	task.Amount = float64(amount) / 100.0 // Ensure amount is set on task for chargeUser to work correctly if it uses it directly. Though chargeUser uses costs.TotalCosts predominantly, setting it is safer.
+	chargeErr := s.chargeUser(costs, billingData, task, logger)
+	if chargeErr != nil {
+		logger.WithError(chargeErr).Error("failed to charge user for credit reload")
+		return chargeErr
+	}
+	
+	now := time.Now()
+	deduplicationKey := helpers.GenerateDeduplicationKey("RELOAD_CREDITS", now.Year(), int(now.Month()), now.Day(), task.WorkspaceID, int(task.CreatorID)) + "_" + fmt.Sprintf("%d", now.UnixNano())
+	
+	insertStmt, err := s.db.Prepare("INSERT INTO users_credits (`created_at`, `updated_at`, `user_id`, `cents`, `source`, `balance`, `card_id`, `status`, `workspace_id`, `deduplication_key`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	if err != nil {
+		logger.WithError(err).Error("failed to prepare credits insert statement")
+		return err
+	}
+	defer insertStmt.Close()
+
+	_, err = insertStmt.Exec(now, now, task.CreatorID, amount, "AUTO_TOPUP", amount, cardID, "APPROVED", task.WorkspaceID, deduplicationKey)
+	return err
 }
 
 func (s *BillingService) getSubscriptionData(subscriptionID int64, logger *logrus.Entry) (string, error) {
