@@ -926,10 +926,41 @@ func (s *BillingService) chargeUser(costs *BillingCosts, data *BillingData, task
 func (s *BillingService) chargeInvoice(invoiceID int64, costs *BillingCosts, data *BillingData, task models.BillingTask, logger *logrus.Entry) error {
 	logger.Infof("Charging user %d, on workspace %d, plan type %s", data.User.Id, data.Workspace.Id, data.Workspace.Plan)
 
+	var err error
 	if data.Plan.PayAsYouGo {
-		return s.chargeWithCredits(invoiceID, costs, data, task, logger)
+		err = s.chargeWithCredits(invoiceID, costs, data, task, logger)
+
+		// Documenting the code: After charging the user, publish a message to the alerting_queue (alerting_tasks).
+		// This sends a balance check alert. We include the relevant task fields so the alerting worker
+		// can evaluate the user tracking states properly.
+		if err == nil {
+			alertTask := struct {
+				WorkspaceID int
+				Source      string
+				CreatedAt   time.Time
+			}{
+				WorkspaceID: task.WorkspaceID,
+				Source:      "SCHEDULER",
+				CreatedAt:   time.Now(),
+			}
+
+			payloadBytes, jsonErr := json.Marshal(alertTask)
+			if jsonErr != nil {
+				logger.WithError(jsonErr).Error("failed to serialize balance check alert task")
+			} else if s.rabbitmqPublisher != nil {
+				pubErr := s.rabbitmqPublisher.Publish("alerting_tasks", payloadBytes)
+				if pubErr != nil {
+					logger.WithError(pubErr).Error("failed to publish balance check alert task to alerting_tasks")
+				} else {
+					logger.Infof("Successfully dispatched balance check alert for workspace %d", task.WorkspaceID)
+				}
+			}
+		}
+	} else {
+		err = s.chargeWithCard(invoiceID, costs, data, task, logger)
 	}
-	return s.chargeWithCard(invoiceID, costs, data, task, logger)
+
+	return err
 }
 
 func (s *BillingService) getPaymentMethods(workspaceID int) (map[string]string, error) {
