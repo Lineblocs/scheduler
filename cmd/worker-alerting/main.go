@@ -29,17 +29,16 @@ type AlertHandler interface {
 	Handle(ctx context.Context, task AlertTask) error
 }
 
-// LowBalanceAlertTask holds data for low balance alerting
-type LowBalanceAlertTask struct {
+// BalanceCheckAlertTask holds data for low balance alerting
+type BalanceCheckAlertTask struct {
 	WorkspaceID int
 }
 
-// LowBalanceStruct represents another alert struct for low balance alerts
-type LowBalanceStruct struct {
-	WorkspaceID      int
-	Balance          float64
-	BalanceThreshold float64
-	TopUpAmount      float64
+// BalanceCheckStruct represents another alert struct for balance checks
+type BalanceCheckStruct struct {
+	WorkspaceID int
+	Source      string
+	CreatedAt   time.Time
 }
 
 // UsageLimitAlertTask holds data for usage limit alerting
@@ -53,7 +52,7 @@ type UsageLimitAlertTask struct {
 type AlertTask struct {
 	Action     string
 	WorkspaceID int
-	LowBalance *LowBalanceAlertTask
+	BalanceCheck *BalanceCheckAlertTask
 	UsageLimit *UsageLimitAlertTask
 }
 
@@ -83,32 +82,37 @@ func (r *AlertRegistry) Dispatch(ctx context.Context, task AlertTask) (bool, err
 
 // --- STRATEGY 1: Low Balance Alert Handler ---
 
-type LowBalanceAlertHandler struct {
+type BalanceCheckAlertHandler struct {
 	db        *sql.DB
 	rdb       *redis.Client
 	publisher *billing.GenericRabbitMQPublisher
 }
 
-func NewLowBalanceAlertHandler(db *sql.DB, rdb *redis.Client, pub *billing.GenericRabbitMQPublisher) *LowBalanceAlertHandler {
-	return &LowBalanceAlertHandler{db: db, rdb: rdb, publisher: pub}
+func NewBalanceCheckAlertHandler(db *sql.DB, rdb *redis.Client, pub *billing.GenericRabbitMQPublisher) *BalanceCheckAlertHandler {
+	return &BalanceCheckAlertHandler{db: db, rdb: rdb, publisher: pub}
 }
 
-func (h *LowBalanceAlertHandler) Handle(ctx context.Context, task AlertTask) error {
-	var balance float64
-	var alertThreshold float64
-	var enableAlerts bool
+func (h *BalanceCheckAlertHandler) Handle(ctx context.Context, task AlertTask) error {
 
-	err := h.db.QueryRowContext(ctx, `
-		SELECT balance, low_balance_threshold, enable_low_balance_alert 
-		FROM workspaces 
-		WHERE id = ?`, task.WorkspaceID).Scan(&balance, &alertThreshold, &enableAlerts)
-
-	if err == sql.ErrNoRows {
+	workspace, err := helpers.GetWorkspaceFromDB(task.WorkspaceID)
+	if err != nil {
 		log.Printf("[Alerts] Workspace %d not found for low balance check. Skipping.", task.WorkspaceID)
 		return nil
-	} else if err != nil {
-		return fmt.Errorf("failed fetching workspace settings: %w", err)
 	}
+
+	sub, err := helpers.GetSubscription(task.WorkspaceID)
+	if err != nil {
+		return fmt.Errorf("failed fetching subscription: %w", err)
+	}
+
+	billingInfo, err := helpers.GetWorkspaceBillingInfo(workspace)
+	if err != nil {
+		return fmt.Errorf("failed fetching billing info: %w", err)
+	}
+	balance := float64(billingInfo.RemainingBalanceCents) / 100.0
+
+	alertThreshold := float64(sub.AutoTopupThreshold)
+	enableAlerts := sub.AutoTopupEnabled
 
 	alertKey := fmt.Sprintf("alert:low_balance:%d", task.WorkspaceID)
 
@@ -240,7 +244,7 @@ func main() {
 
 	// Initialize and register all alert strategies
 	alertRegistry := NewAlertRegistry()
-	alertRegistry.Register("CHECK_LOW_BALANCE", NewLowBalanceAlertHandler(db, rdb, publisher))
+	alertRegistry.Register("CHECK_LOW_BALANCE", NewBalanceCheckAlertHandler(db, rdb, publisher))
 	// alertRegistry.Register("CHECK_USAGE_LIMIT", NewUsageLimitAlertHandler(db, rdb, publisher))
 
 	q, err := ch.QueueDeclare(alertingTasksQueue, true, false, false, false, nil)
