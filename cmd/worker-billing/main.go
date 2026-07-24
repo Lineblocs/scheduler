@@ -93,6 +93,9 @@ func main() {
 			continue
 		}
 
+		taskJSON, _ := json.MarshalIndent(task, "", "  ")
+		log.Printf("Received billing task: %s", string(taskJSON))
+
 		// STEP 0: Handle plan cancellation requests
 		if task.CancelPlan {
 			log.Printf("Plan cancellation requested for subscription %d (workspace %d). Updating status to CANCELLED.", task.SubscriptionID, task.WorkspaceID)
@@ -143,22 +146,26 @@ func main() {
 			continue
 		}
 
-		targetNextDate, err := time.Parse("2006-01-02", task.NextBillingDate)
-		if err != nil {
-			log.Printf("Hard Failure: Malformed task date configuration: %v", err)
-			rdb.Del(ctx, lockKey)
-			cancel()
-			d.Ack(false) // Drop invalid message permanently
-			continue
-		}
+		var targetNextDate time.Time
+		if task.Action != "ADD_CREDITS" {
+			var err error
+			targetNextDate, err = time.Parse("2006-01-02", task.NextBillingDate)
+			if err != nil {
+				log.Printf("Hard Failure: Malformed task date configuration: %v", err)
+				rdb.Del(ctx, lockKey)
+				cancel()
+				d.Ack(false) // Drop invalid message permanently
+				continue
+			}
 
-		// Idempotency verification guard
-		if dbNextBillingDate.Valid && !dbNextBillingDate.Time.Before(targetNextDate) {
-			log.Printf("Idempotency Triggered: Cycle %s for subscription %d already completed. Dropping duplicate task.", task.NextBillingDate, task.SubscriptionID)
-			rdb.Del(ctx, lockKey)
-			cancel()
-			d.Ack(false)
-			continue
+			// Idempotency verification guard
+			if dbNextBillingDate.Valid && !dbNextBillingDate.Time.Before(targetNextDate) {
+				log.Printf("Idempotency Triggered: Cycle %s for subscription %d already completed. Dropping duplicate task.", task.NextBillingDate, task.SubscriptionID)
+				rdb.Del(ctx, lockKey)
+				cancel()
+				d.Ack(false)
+				continue
+			}
 		}
 
 		// STEP 3: Handle slow third-party API payment processing (Database is completely free here)
@@ -183,21 +190,32 @@ func main() {
 		}
 
 		// STEP 4: Success Path -> Clean, fast context-bound atomic update
-		_, err = db.ExecContext(ctx, `
-			UPDATE subscriptions 
-			SET next_billing_date = ?, 
-				current_plan_id = ?, 
-				scheduled_plan_id = NULL, 
-				scheduled_effective_date = NULL 
-			WHERE id = ?`, targetNextDate, task.PlanToBill, task.SubscriptionID)
+		excludedActions := []string{"ADD_CREDITS"}
+		shouldSkipUpdate := false
+		for _, action := range excludedActions {
+			if task.Action == action {
+				shouldSkipUpdate = true
+				break
+			}
+		}
+		
+		if !shouldSkipUpdate {
+			_, err = db.ExecContext(ctx, `
+				UPDATE subscriptions 
+				SET next_billing_date = ?, 
+					current_plan_id = ?, 
+					scheduled_plan_id = NULL, 
+					scheduled_effective_date = NULL 
+				WHERE id = ?`, targetNextDate, task.PlanToBill, task.SubscriptionID)
 
-		if err != nil {
-			log.Printf("CRITICAL FAILURE: Payment cleared but state engine failed to commit update for sub %d: %v", task.SubscriptionID, err)
-			rdb.Del(ctx, lockKey)
-			cancel()
-			time.Sleep(2 * time.Second)
-			d.Nack(false, true)
-			continue
+			if err != nil {
+				log.Printf("CRITICAL FAILURE: Payment cleared but state engine failed to commit update for sub %d: %v", task.SubscriptionID, err)
+				rdb.Del(ctx, lockKey)
+				cancel()
+				time.Sleep(2 * time.Second)
+				d.Nack(false, true)
+				continue
+			}
 		}
 
 		// STEP 5: Clean up contexts and distributed locks

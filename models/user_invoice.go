@@ -8,4 +8,5 @@ type UserInvoice struct {
 	PaymentMethodId    string `json:"payment_method_id"`
 	CardLast4          string  `json:"card_last_4"`
 	CardBrand          string  `json:"card_brand"`
+	CustomDeduplicationKey string `json:"custom_deduplication_key"`
 }

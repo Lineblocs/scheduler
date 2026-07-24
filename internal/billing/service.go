@@ -57,6 +57,30 @@ var invoiceDueDateGracePeriod = 7 * 24 * time.Hour // 7 days by default
 
 const failedChargeDescription = "failed to charge payment card on file"
 
+type BillingServiceInterface interface {
+	ProcessBillingTask(task models.BillingTask, logger *logrus.Entry) error
+	chargeWithCredits(invoiceID int64, costs *BillingCosts, data *BillingData, task models.BillingTask, logger *logrus.Entry) error
+	chargeWithCard(invoiceID int64, costs *BillingCosts, data *BillingData, task models.BillingTask, logger *logrus.Entry) error
+	loadBillingData(task models.BillingTask, billingType string, logger *logrus.Entry) (*BillingData, error)
+	calculateMonthlyCosts(data *BillingData, logger *logrus.Entry) (*BillingCosts, error)
+	calculateAnnualCosts(data *BillingData, logger *logrus.Entry) (*BillingCosts, error)
+	createInvoice(costs *BillingCosts, data *BillingData, logger *logrus.Entry) (*Invoice, error)
+	markInvoiceChargeFailed(invoiceID int64, logger *logrus.Entry) error
+	markInvoiceChargePaid(invoiceID int64, gatewayID string, totalCosts int64, logger *logrus.Entry) error
+	publishPaymentReceipt(task models.BillingTask, paymentAmount int64, cardLast4 string, cardBrand string, logger *logrus.Entry) error
+	publishFailedPayment(task models.BillingTask, reason string, paymentType string, cardLast4 string, cardBrand string, logger *logrus.Entry) error
+	publishWorkspaceUpgrade(task models.BillingTask, planName string, planID int64, action string, logger *logrus.Entry) error
+	publishInvoiceGenerated(task models.BillingTask, invoiceID int64, logger *logrus.Entry) error
+}
+
+func (s *BillingService) generatePayAsYouGoDeduplicationKey() string {
+	now := time.Now()
+	// Generate a new key every 5 minutes based on the current 5-minute window
+	fiveMinuteWindow := now.Unix() / (5 * 60) * (5 * 60)
+	windowTime := time.Unix(fiveMinuteWindow, 0)
+	return fmt.Sprintf("PAY_AS_YOU_GO_%s", windowTime.Format("20060102_1504"))
+}
+
 type RabbitMQPublisher interface {
 	Publish(queue string, message []byte) error
 }
@@ -269,7 +293,13 @@ func (s *BillingService) ProcessTask(task models.BillingTask) error {
 		WithField("workspace_id", task.WorkspaceID).
 		WithField("run_id", task.RunID).
 		WithField("action", task.Action).
-		WithField("amount", task.Amount)
+		WithField("amount", task.Amount).
+		WithField("billing_type", task.BillingType).
+		WithField("subscription_id", task.SubscriptionID).
+		WithField("creator_id", task.CreatorID).
+		WithField("free_trial_ended", task.FreeTrialEnded)
+
+	logger.Infof("Processing billing task with action: %s, billing_type: %s", task.Action, task.BillingType)
 
 	// If free trial has ended, set is_free_trial_active to false
 	if task.FreeTrialEnded {
@@ -290,6 +320,8 @@ func (s *BillingService) ProcessTask(task models.BillingTask) error {
 		err = s.processSettleInvoice(task, logger)
 	case task.Action == "SETTLE_INVOICES":
 		err = s.processSettleInvoices(task, logger)
+	case task.Action == "ADD_CREDITS":
+		err = s.processAddCredits(task, logger)
 	case task.BillingType == "ANNUAL" && (task.Action == "BILLING_RENEWAL" || task.Action == "BILLING_UPGRADE"):
 		err = s.processAnnual(task, logger)
 	case task.BillingType == "MONTHLY" && (task.Action == "BILLING_RENEWAL" || task.Action == "BILLING_UPGRADE"):
@@ -300,12 +332,13 @@ func (s *BillingService) ProcessTask(task models.BillingTask) error {
 		return err
 	}
 
+	// List of actions that exempt updateSubscriptionAnchor
+	exemptActions := map[string]bool{
+		"ADD_CREDITS": true,
+	}
 
-
-	// If this task is a standard recurring cycle, bypass the old internal update.
-	// The state transition is governed safely by the Consumer's database transaction wrapper.
-	if task.Action == "BILLING_RENEWAL" || task.Action == "BILLING_UPGRADE" {
-		logger.Debug("Bypassing internal update; tracking state in consumer transaction layer instead.")
+	if exemptActions[task.Action] {
+		logger.Debugf("Skipping updateSubscriptionAnchor for action: %s", task.Action)
 		return nil
 	}
 
@@ -490,6 +523,76 @@ func (s *BillingService) processSettleInvoices(task models.BillingTask, logger *
 	}
 
 	logger.Infof("Payment recorded successfully for user %d, workspace %d: %d cents", task.CreatorID, task.WorkspaceID, amountToPay)
+	return nil
+}
+
+func (s *BillingService) processAddCredits(task models.BillingTask, logger *logrus.Entry) error {
+	logger.Infof("Processing add credits for user %d, workspace %d, amount: %.2f", task.CreatorID, task.WorkspaceID, task.Amount)
+
+	billingData, err := s.loadBillingData(task, task.BillingType, logger)
+	if err != nil {
+		logger.WithError(err).Error("failed to load billing data for add credits")
+		return err
+	}
+
+	amountInCents := int64(task.Amount * 100)
+	if amountInCents <= 0 {
+		logger.Warnf("Invalid amount for add credits: %d cents", amountInCents)
+		return fmt.Errorf("invalid amount for add credits")
+	}
+
+	logger.Infof("Charging user %d for credits: %d cents", task.CreatorID, amountInCents)
+	costs := &BillingCosts{
+		TotalCosts:  amountInCents,
+		InvoiceDesc: fmt.Sprintf("Credit purchase for user %d", task.CreatorID),
+	}
+
+	chargeErr := s.chargeUser(costs, billingData, task, logger)
+	if chargeErr != nil {
+		logger.WithError(chargeErr).Error("failed to charge user for credits")
+
+		if pubErr := s.publishFailedPayment(task, failedChargeDescription, "CARD", task.CardLast4, task.CardBrand, logger); pubErr != nil {
+			logger.WithError(pubErr).Error("could not publish failed payment for add credits")
+		}
+
+		return chargeErr
+	}
+
+	logger.Infof("Successfully charged user %d for %d cents, inserting credits record", task.CreatorID, amountInCents)
+
+	// Generate deduplication key for credits with nanosecond timestamp for uniqueness
+	now := time.Now()
+	deduplicationKey := helpers.GenerateDeduplicationKey("ADD_CREDITS", now.Year(), int(now.Month()), now.Day(), task.WorkspaceID, int(task.CreatorID)) + "_" + fmt.Sprintf("%d", now.UnixNano())
+	
+	// Get payment methods to retrieve primary card ID
+	paymentMethods, err := s.getPaymentMethods(task.WorkspaceID)
+	if err != nil {
+		logger.WithError(err).Warnf("failed to retrieve payment methods, using empty card_id")
+	}
+	primaryCardID := paymentMethods["primary_card_id"]
+	
+	now = time.Now()
+	insertStmt, err := s.db.Prepare("INSERT INTO users_credits (`created_at`, `updated_at`, `user_id`, `cents`, `source`, `balance`, `card_id`, `status`, `workspace_id`, `deduplication_key`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	if err != nil {
+		logger.WithError(err).Error("failed to prepare credits insert statement")
+		return err
+	}
+	defer insertStmt.Close()
+
+	// Insert credits record with balance equal to the amount added
+	result, err := insertStmt.Exec(now, now, task.CreatorID, amountInCents, "UI_PAYMENT", amountInCents, primaryCardID, "APPROVED", task.WorkspaceID, deduplicationKey)
+	if err != nil {
+		logger.WithError(err).Error("failed to insert credits record")
+		return err
+	}
+
+	creditID, err := result.LastInsertId()
+	if err != nil {
+		logger.WithError(err).Error("failed to retrieve credit record id")
+		return err
+	}
+
+	logger.Infof("Credits added successfully for user %d, workspace %d: %d cents (credit id: %d)", task.CreatorID, task.WorkspaceID, amountInCents, creditID)
 	return nil
 }
 
@@ -782,28 +885,34 @@ func (s *BillingService) getPaymentMethods(workspaceID int) (map[string]string, 
 	result := make(map[string]string)
 
 	// Get primary payment method
-	primaryRow := s.db.QueryRow("SELECT stripe_payment_method_id FROM users_cards WHERE workspace_id = ? AND primary = 1", workspaceID)
+	primaryRow := s.db.QueryRow("SELECT id, stripe_payment_method_id FROM users_cards WHERE workspace_id = ? AND `primary` = 1", workspaceID)
+	var primaryCardID int
 	var primaryMethodID string
-	primaryErr := primaryRow.Scan(&primaryMethodID)
+	primaryErr := primaryRow.Scan(&primaryCardID, &primaryMethodID)
 	if primaryErr != nil && primaryErr != sql.ErrNoRows {
 		return nil, primaryErr
 	}
 	if primaryErr == nil {
+		result["primary_card_id"] = fmt.Sprintf("%d", primaryCardID)
 		result["primary_method_id"] = primaryMethodID
 	} else {
+		result["primary_card_id"] = ""
 		result["primary_method_id"] = ""
 	}
 
 	// Get backup payment method
-	backupRow := s.db.QueryRow("SELECT stripe_payment_method_id FROM users_cards WHERE workspace_id = ? AND backup = 1", workspaceID)
+	backupRow := s.db.QueryRow("SELECT id, stripe_payment_method_id FROM users_cards WHERE workspace_id = ? AND `backup` = 1", workspaceID)
+	var backupCardID int
 	var backupMethodID string
-	backupErr := backupRow.Scan(&backupMethodID)
+	backupErr := backupRow.Scan(&backupCardID, &backupMethodID)
 	if backupErr != nil && backupErr != sql.ErrNoRows {
 		return nil, backupErr
 	}
 	if backupErr == nil {
+		result["backup_card_id"] = fmt.Sprintf("%d", backupCardID)
 		result["backup_method_id"] = backupMethodID
 	} else {
+		result["backup_card_id"] = ""
 		result["backup_method_id"] = ""
 	}
 
@@ -864,10 +973,15 @@ func (s *BillingService) chargeWithCard(invoiceID int64, costs *BillingCosts, da
 	cardChargeAmount := int(math.Ceil(float64(costs.TotalCosts)))
 	logger.Info(fmt.Sprintf("Total costs to charge on card is %d cents", cardChargeAmount))
 
+
 	invoice := models.UserInvoice{
 		Id:          int(invoiceID),
 		Cents:       cardChargeAmount,
 		InvoiceDesc: costs.InvoiceDesc,
+	}
+
+	if task.Action == "ADD_CREDITS" {
+		invoice.CustomDeduplicationKey = s.generatePayAsYouGoDeduplicationKey()
 	}
 
 	logger.Infof("Payment method ID: %s", task.PaymentMethodID)

@@ -115,7 +115,14 @@ func (hndl *StripeBillingHandler) ChargeCustomer(user *helpers.User, workspace *
     }
 
     // Apply the custom idempotency key
-    idempotencyKey := createIdempotencyKey(workspace.Id, amountCents)
+    var idempotencyKey string
+    if invoice.CustomDeduplicationKey != "" {
+        idempotencyKey = invoice.CustomDeduplicationKey
+        helpers.Log(logrus.InfoLevel, fmt.Sprintf("Using custom deduplication key from invoice: %s", idempotencyKey))
+    } else {
+        idempotencyKey = createIdempotencyKey(workspace.Id, amountCents)
+        helpers.Log(logrus.InfoLevel, fmt.Sprintf("Generated idempotency key: %s", idempotencyKey))
+    }
 	helpers.Log(logrus.InfoLevel, fmt.Sprintf("Using idempotency key: %s for PaymentIntent creation", idempotencyKey))
 	params.SetIdempotencyKey(idempotencyKey)
 
