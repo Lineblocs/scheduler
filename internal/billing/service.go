@@ -466,7 +466,7 @@ func (s *BillingService) processSettleInvoices(task models.BillingTask, logger *
 		TotalCosts:  amountToPay,
 		InvoiceDesc: fmt.Sprintf("Settlement for user %d", task.CreatorID),
 	}
-	chargeErr := s.chargeUser(costs, billingData, task, logger)
+	chargeErr := s.chargeUser(costs, billingData, task, nil, logger)
 	if chargeErr != nil {
 		logger.WithError(chargeErr).Error("failed to charge user for settlement")
 		return chargeErr
@@ -537,6 +537,8 @@ func (s *BillingService) processAddCredits(task models.BillingTask, logger *logr
 		return err
 	}
 
+
+
 	amountInCents := int64(task.Amount * 100)
 	if amountInCents <= 0 {
 		logger.Warnf("Invalid amount for add credits: %d cents", amountInCents)
@@ -549,7 +551,17 @@ func (s *BillingService) processAddCredits(task models.BillingTask, logger *logr
 		InvoiceDesc: fmt.Sprintf("Credit purchase for user %d", task.CreatorID),
 	}
 
-	chargeErr := s.chargeUser(costs, billingData, task, logger)
+	invoice, err := s.createInvoice(costs, billingData, logger)
+	if err != nil {
+		logger.WithError(err).Error("failed to create invoice for add credits")
+		return err
+	}
+
+	if err = s.publishInvoiceGenerated(task, invoice.Id, logger); err != nil {
+		logger.WithError(err).Warnf("failed to publish invoice generated event for invoice %d", invoice.Id)
+	}
+
+	chargeErr := s.chargeUser(costs, billingData, task, nil, logger)
 	if chargeErr != nil {
 		logger.WithError(chargeErr).Error("failed to charge user for credits")
 
@@ -918,8 +930,11 @@ func (s *BillingService) processAnnual(task models.BillingTask, logger *logrus.E
 
 // --- CHARGE LOGIC ---
 
-func (s *BillingService) chargeUser(costs *BillingCosts, data *BillingData, task models.BillingTask, logger *logrus.Entry) error {
+func (s *BillingService) chargeUser(costs *BillingCosts, data *BillingData, task models.BillingTask, invoice models.Invoice, logger *logrus.Entry) error {
 	invoiceID := int64(0)
+	if invoice != nil {
+		invoiceID = invoice.Id
+	}
 	return s.chargeWithCard(invoiceID, costs, data, task, logger)
 }
 
@@ -933,7 +948,7 @@ func (s *BillingService) chargeInvoice(invoiceID int64, costs *BillingCosts, dat
 		// Documenting the code: After charging the user, publish a message to the alerting_queue (alerting_tasks).
 		// This sends a balance check alert. We include the relevant task fields so the alerting worker
 		// can evaluate the user tracking states properly.
-		if err == nil {
+		if err == nil && (task.Action == "BILLING_RENEWAL" || task.Action == "BILLING_UPGRADE") && (task.BillingType == "ANNUAL" || task.BillingType == "MONTHLY") {
 			alertTask := struct {
 				WorkspaceID int
 				Source      string
@@ -1032,6 +1047,30 @@ func (s *BillingService) chargeCreditsOnly(invoiceID int64, totalCosts int64, da
 	_, err = updateStmt.Exec(totalCosts, confNumber, invoiceID)
 	if err != nil {
 		logger.WithError(err).Error("error updating invoice")
+		return err
+	}
+
+	// Insert record into users_invoices_payments when invoice is marked as PAID
+	insertStmt, err := s.db.Prepare("INSERT INTO users_invoices_payments (`created_at`, `updated_at`, `user_id`, `workspace_id`, `cents`, `source`, `status`, `invoice_id`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+	if err != nil {
+		logger.WithError(err).Error("failed to prepare payment insert statement")
+		return err
+	}
+	defer insertStmt.Close()
+
+	now := time.Now()
+	_, err = insertStmt.Exec(
+		now,
+		now,
+		data.User.Id,
+		data.Workspace.Id,
+		totalCosts,
+		"CREDITS",
+		"PAID",
+		invoiceID,
+	)
+	if err != nil {
+		logger.WithError(err).Error("failed to insert payment record")
 		return err
 	}
 
@@ -1397,7 +1436,44 @@ func (s *BillingService) markInvoiceChargePaid(invoiceID int64, gatewayID string
 	}
 	paidDate := time.Now().Format("2006-01-02 15:04:05")
 	_, err = s.db.Exec("UPDATE users_invoices SET status = 'PAID', source ='CARD', cents_collected = ?, confirmation_number = ?, payment_gateway_id = ?, paid_date = ? WHERE id = ?", totalCosts, confirmNumber, gatewayID, paidDate, invoiceID)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Insert record into users_invoices_payments when invoice is marked as PAID
+	insertStmt, err := s.db.Prepare("INSERT INTO users_invoices_payments (`created_at`, `updated_at`, `user_id`, `workspace_id`, `cents`, `source`, `status`, `invoice_id`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+	if err != nil {
+		logger.WithError(err).Error("failed to prepare payment insert statement")
+		return err
+	}
+	defer insertStmt.Close()
+
+	// Get user_id and workspace_id from invoice
+	var userID int64
+	var workspaceID int64
+	err = s.db.QueryRow("SELECT user_id, workspace_id FROM users_invoices WHERE id = ?", invoiceID).Scan(&userID, &workspaceID)
+	if err != nil {
+		logger.WithError(err).Error("failed to retrieve user_id and workspace_id from invoice")
+		return err
+	}
+
+	now := time.Now()
+	_, err = insertStmt.Exec(
+		now,
+		now,
+		userID,
+		workspaceID,
+		totalCosts,
+		"CARD",
+		"PAID",
+		invoiceID,
+	)
+	if err != nil {
+		logger.WithError(err).Error("failed to insert payment record into users_invoices_payments")
+		return err
+	}
+
+	return nil
 }
 
 
