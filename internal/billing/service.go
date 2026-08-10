@@ -508,7 +508,7 @@ func (s *BillingService) processSettleInvoices(task models.BillingTask, logger *
 				logger.WithError(parseErr).Warnf("invalid invoice id in csv: %s", invoiceIDStr)
 				continue
 			}
-			updateErr := s.markInvoiceChargePaid(invoiceID, "", 0, logger)
+			updateErr := s.markInvoiceChargePaid(invoiceID, &task, "", 0, logger)
 			if updateErr != nil {
 				logger.WithError(updateErr).Warnf("failed to mark invoice %d as paid", invoiceID)
 			} else {
@@ -561,7 +561,7 @@ func (s *BillingService) processAddCredits(task models.BillingTask, logger *logr
 		logger.WithError(err).Warnf("failed to publish invoice generated event for invoice %d", invoice.Id)
 	}
 
-	chargeErr := s.chargeUser(costs, billingData, task, nil, logger)
+	chargeErr := s.chargeUser(costs, billingData, task, invoice, logger)
 	if chargeErr != nil {
 		logger.WithError(chargeErr).Error("failed to charge user for credits")
 
@@ -639,7 +639,7 @@ func (s *BillingService) processReloadCredits(task models.BillingTask, logger *l
 	}
 
 	task.Amount = float64(amount) / 100.0 // Ensure amount is set on task for chargeUser to work correctly if it uses it directly. Though chargeUser uses costs.TotalCosts predominantly, setting it is safer.
-	chargeErr := s.chargeUser(costs, billingData, task, logger)
+	chargeErr := s.chargeUser(costs, billingData, task, nil, logger)
 	if chargeErr != nil {
 		logger.WithError(chargeErr).Error("failed to charge user for credit reload")
 		return chargeErr
@@ -930,7 +930,7 @@ func (s *BillingService) processAnnual(task models.BillingTask, logger *logrus.E
 
 // --- CHARGE LOGIC ---
 
-func (s *BillingService) chargeUser(costs *BillingCosts, data *BillingData, task models.BillingTask, invoice models.Invoice, logger *logrus.Entry) error {
+func (s *BillingService) chargeUser(costs *BillingCosts, data *BillingData, task models.BillingTask, invoice *Invoice, logger *logrus.Entry) error {
 	invoiceID := int64(0)
 	if invoice != nil {
 		invoiceID = invoice.Id
@@ -1133,7 +1133,7 @@ func (s *BillingService) chargeWithCard(invoiceID int64, costs *BillingCosts, da
 	}
 
 	logger.Infof("Payment charged successfully for invoice %d with gateway ID %s", invoiceID, chargeResult.PaymentGatewayID)
-	return s.markInvoiceChargePaid(invoiceID, chargeResult.PaymentGatewayID, int64(costs.TotalCosts), logger)
+	return s.markInvoiceChargePaid(invoiceID, &task, chargeResult.PaymentGatewayID, int64(costs.TotalCosts), logger)
 }
 
 // --- DATA LOADING & CALCULATIONS ---
@@ -1429,7 +1429,7 @@ func (s *BillingService) markInvoiceChargeFailed(invoiceID int64, logger *logrus
 	return err
 }
 
-func (s *BillingService) markInvoiceChargePaid(invoiceID int64, gatewayID string, totalCosts int64, logger *logrus.Entry) error {
+func (s *BillingService) markInvoiceChargePaid(invoiceID int64, task *models.BillingTask, gatewayID string, totalCosts int64, logger *logrus.Entry) error {
 	confirmNumber, err := utils.CreateInvoiceConfirmationNumber()
 	if err != nil {
 		return err
@@ -1449,13 +1449,10 @@ func (s *BillingService) markInvoiceChargePaid(invoiceID int64, gatewayID string
 	defer insertStmt.Close()
 
 	// Get user_id and workspace_id from invoice
-	var userID int64
-	var workspaceID int64
-	err = s.db.QueryRow("SELECT user_id, workspace_id FROM users_invoices WHERE id = ?", invoiceID).Scan(&userID, &workspaceID)
-	if err != nil {
-		logger.WithError(err).Error("failed to retrieve user_id and workspace_id from invoice")
-		return err
-	}
+	var userID int
+	var workspaceID int
+	userID = task.CreatorID
+	workspaceID = task.WorkspaceID
 
 	now := time.Now()
 	_, err = insertStmt.Exec(
