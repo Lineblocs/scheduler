@@ -31,3 +31,8 @@ func (hndl *BraintreeBillingHandler) ChargeCustomer(user *helpers.User, workspac
 	// todo: implement handler
 	return nil, errors.New("not implemented yet")
 }
+
+func (hndl *BraintreeBillingHandler) RefundAccount(user *helpers.User, workspace *helpers.Workspace, amount int64) error {
+	return errors.New("not implemented yet")
+}
+

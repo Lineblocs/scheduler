@@ -324,6 +324,9 @@ func (s *BillingService) ProcessTask(task models.BillingTask) error {
 		err = s.processAddCredits(task, logger)
 	case task.Action == "RELOAD_CREDITS":
 		err = s.processReloadCredits(task, logger)
+	case task.Action == "REFUND_ACCOUNT":
+		err = s.processRefund(task, logger)
+
 	case task.BillingType == "ANNUAL" && (task.Action == "BILLING_RENEWAL" || task.Action == "BILLING_UPGRADE"):
 		err = s.processAnnual(task, logger)
 	case task.BillingType == "MONTHLY" && (task.Action == "BILLING_RENEWAL" || task.Action == "BILLING_UPGRADE"):
@@ -338,6 +341,7 @@ func (s *BillingService) ProcessTask(task models.BillingTask) error {
 	exemptActions := map[string]bool{
 		"ADD_CREDITS":    true,
 		"RELOAD_CREDITS": true,
+		"REFUND_ACCOUNT": true,
 	}
 
 	if exemptActions[task.Action] {
@@ -347,6 +351,18 @@ func (s *BillingService) ProcessTask(task models.BillingTask) error {
 
 	return s.updateSubscriptionAnchor(task, logger)
 }
+
+func (s *BillingService) processRefund(task models.BillingTask, logger *logrus.Entry) error {
+	logger.Infof("Processing refund for workspace %d, task amount: %f", task.WorkspaceID, task.Amount)
+
+	refundCents := int64(task.Amount * 100)
+	if refundCents <= 0 {
+		return fmt.Errorf("invalid refund amount: %d", refundCents)
+	}
+
+	return s.paymentRepository.RefundAccount(task, refundCents, logger)
+}
+
 
 // --- PRORATION & ANCHOR UPDATES ---
 

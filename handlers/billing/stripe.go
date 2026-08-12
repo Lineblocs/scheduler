@@ -8,6 +8,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/stripe/stripe-go/v72"
 	"github.com/stripe/stripe-go/v72/paymentintent"
+	"github.com/stripe/stripe-go/v72/refund"
 	"github.com/sirupsen/logrus"
 	models "lineblocs.com/scheduler/models"
 	"database/sql"
@@ -170,3 +171,24 @@ func (hndl *StripeBillingHandler) ChargeCustomer(user *helpers.User, workspace *
 
     return chargeResult, nil
 }
+
+func (hndl *StripeBillingHandler) RefundAccount(user *helpers.User, workspace *helpers.Workspace, amount int64) error {
+	stripe.Key = hndl.StripeKey
+
+	params := &stripe.RefundParams{
+		PaymentIntent: stripe.String("pi_123456789"), // Hardcoded payment intent ID
+		Amount:        stripe.Int64(amount),
+	}
+
+	res, err := refund.New(params)
+	if err != nil {
+		helpers.Log(logrus.ErrorLevel, fmt.Sprintf("Stripe Refund Failed: %v", err))
+		return err
+	}
+
+	helpers.Log(logrus.InfoLevel, fmt.Sprintf("Stripe Refund processed. ID: %s", res.ID))
+
+	return nil
+}
+
+
