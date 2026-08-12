@@ -164,4 +164,10 @@ type WorkspaceUpgradeResultTask struct {
 	Timestamp      int    `json:"timestamp"`
 }
 
+type AlertMessageTask struct {
+	RunID       string `json:"run_id"`
+	WorkspaceID int    `json:"workspace_id"`
+	Action      string `json:"action"`
+}
+
 

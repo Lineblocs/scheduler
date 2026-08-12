@@ -147,7 +147,14 @@ func main() {
 		}
 
 		var targetNextDate time.Time
-		if task.Action != "ADD_CREDITS" {
+		excludedActions := map[string]bool{
+			"ADD_CREDITS":    true,
+			"RELOAD_CREDITS": true,
+		}
+
+		shouldSkipUpdate := excludedActions[task.Action]
+
+		if !shouldSkipUpdate {
 			var err error
 			targetNextDate, err = time.Parse("2006-01-02", task.NextBillingDate)
 			if err != nil {
@@ -185,17 +192,9 @@ func main() {
 				rdb.Del(ctx, lockKey)
 				cancel()
 				d.Ack(false)
-			}
-			continue
-		}
-
-		// STEP 4: Success Path -> Clean, fast context-bound atomic update
-		excludedActions := []string{"ADD_CREDITS"}
-		shouldSkipUpdate := false
-		for _, action := range excludedActions {
-			if task.Action == action {
-				shouldSkipUpdate = true
-				break
+				if !excludedActions[task.Action] {
+					continue
+				}
 			}
 		}
 		

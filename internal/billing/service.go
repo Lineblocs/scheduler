@@ -336,7 +336,8 @@ func (s *BillingService) ProcessTask(task models.BillingTask) error {
 
 	// List of actions that exempt updateSubscriptionAnchor
 	exemptActions := map[string]bool{
-		"ADD_CREDITS": true,
+		"ADD_CREDITS":    true,
+		"RELOAD_CREDITS": true,
 	}
 
 	if exemptActions[task.Action] {
@@ -608,7 +609,7 @@ func (s *BillingService) processReloadCredits(task models.BillingTask, logger *l
 	
 	// Query workspace topup amount
 	var amountDollars float64
-	err := s.db.QueryRow("SELECT auto_topup_amount FROM workspaces WHERE id = ?", task.WorkspaceID).Scan(&amountDollars)
+	err := s.db.QueryRow("SELECT auto_topup_amount FROM subscriptions WHERE workspace_id = ?", task.WorkspaceID).Scan(&amountDollars)
 	if err != nil {
 		logger.WithError(err).Error("failed to get topup amount")
 		return err
@@ -621,7 +622,7 @@ func (s *BillingService) processReloadCredits(task models.BillingTask, logger *l
 	// Query user primary card
 	var cardID int64
 	var stripeCardID string
-	err = s.db.QueryRow("SELECT id, stripe_card_id FROM users_cards WHERE workspace_id = ? AND is_primary = 1", task.WorkspaceID).Scan(&cardID, &stripeCardID)
+	err = s.db.QueryRow("SELECT id, stripe_payment_method_id FROM users_cards WHERE workspace_id = ? AND `primary` = 1", task.WorkspaceID).Scan(&cardID, &stripeCardID)
 	if err != nil {
 		logger.WithError(err).Error("failed to get primary card")
 		return err
@@ -638,8 +639,18 @@ func (s *BillingService) processReloadCredits(task models.BillingTask, logger *l
 		InvoiceDesc: fmt.Sprintf("Credit reload for workspace %d", task.WorkspaceID),
 	}
 
+	invoice, err := s.createInvoice(costs, billingData, logger)
+	if err != nil {
+		logger.WithError(err).Error("failed to create invoice for credit reload")
+		return err
+	}
+
+	if err = s.publishInvoiceGenerated(task, invoice.Id, logger); err != nil {
+		logger.WithError(err).Warnf("failed to publish invoice generated event for invoice %d", invoice.Id)
+	}
+
 	task.Amount = float64(amount) / 100.0 // Ensure amount is set on task for chargeUser to work correctly if it uses it directly. Though chargeUser uses costs.TotalCosts predominantly, setting it is safer.
-	chargeErr := s.chargeUser(costs, billingData, task, nil, logger)
+	chargeErr := s.chargeUser(costs, billingData, task, invoice, logger)
 	if chargeErr != nil {
 		logger.WithError(chargeErr).Error("failed to charge user for credit reload")
 		return chargeErr
