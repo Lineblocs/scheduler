@@ -9,7 +9,7 @@ import (
 
 type BillingHandler interface {
 	ChargeCustomer(user *helpers.User, workspace *helpers.Workspace, invoice *models.UserInvoice) (*ChargeResult, error)
-	RefundAccount(user *helpers.User, workspace *helpers.Workspace, amount int64) error
+	RefundAccount(user *helpers.User, workspace *helpers.Workspace, amount int64, refundIDs []string) error
 }
 
 type Billing struct {

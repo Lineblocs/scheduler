@@ -360,7 +360,7 @@ func (s *BillingService) processRefund(task models.BillingTask, logger *logrus.E
 		return fmt.Errorf("invalid refund amount: %d", refundCents)
 	}
 
-	return s.paymentRepository.RefundAccount(task, refundCents, logger)
+	return s.paymentRepository.RefundAccount(task, refundCents, task.RefundIDs, logger)
 }
 
 

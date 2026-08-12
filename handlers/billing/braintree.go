@@ -32,7 +32,7 @@ func (hndl *BraintreeBillingHandler) ChargeCustomer(user *helpers.User, workspac
 	return nil, errors.New("not implemented yet")
 }
 
-func (hndl *BraintreeBillingHandler) RefundAccount(user *helpers.User, workspace *helpers.Workspace, amount int64) error {
+func (hndl *BraintreeBillingHandler) RefundAccount(user *helpers.User, workspace *helpers.Workspace, amount int64, refundIDs []string) error {
 	return errors.New("not implemented yet")
 }
 

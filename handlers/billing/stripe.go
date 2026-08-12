@@ -172,21 +172,59 @@ func (hndl *StripeBillingHandler) ChargeCustomer(user *helpers.User, workspace *
     return chargeResult, nil
 }
 
-func (hndl *StripeBillingHandler) RefundAccount(user *helpers.User, workspace *helpers.Workspace, amount int64) error {
+func (hndl *StripeBillingHandler) RefundAccount(user *helpers.User, workspace *helpers.Workspace, amount int64, refundIDs []string) error {
 	stripe.Key = hndl.StripeKey
 
-	params := &stripe.RefundParams{
-		PaymentIntent: stripe.String("pi_123456789"), // Hardcoded payment intent ID
-		Amount:        stripe.Int64(amount),
-	}
+	remainingToRefund := amount
 
-	res, err := refund.New(params)
-	if err != nil {
-		helpers.Log(logrus.ErrorLevel, fmt.Sprintf("Stripe Refund Failed: %v", err))
-		return err
-	}
+	for _, piID := range refundIDs {
+		if remainingToRefund <= 0 {
+			break
+		}
 
-	helpers.Log(logrus.InfoLevel, fmt.Sprintf("Stripe Refund processed. ID: %s", res.ID))
+		pi, err := paymentintent.Get(piID, nil)
+		if err != nil {
+			helpers.Log(logrus.ErrorLevel, fmt.Sprintf("Failed to fetch PaymentIntent %s: %v", piID, err))
+			continue
+		}
+
+		if pi.Status != stripe.PaymentIntentStatusSucceeded {
+			continue
+		}
+
+		var amountRefunded int64
+		if pi.Charges != nil {
+			for _, charge := range pi.Charges.Data {
+				amountRefunded += charge.AmountRefunded
+			}
+		}
+
+		availableOnPI := pi.AmountReceived - amountRefunded
+		if availableOnPI <= 0 {
+			continue
+		}
+
+		refundAmount := remainingToRefund
+		if refundAmount > availableOnPI {
+			refundAmount = availableOnPI
+		}
+
+		params := &stripe.RefundParams{
+			PaymentIntent: stripe.String(pi.ID),
+			Amount:        stripe.Int64(refundAmount),
+			Reason:        stripe.String(string(stripe.RefundReasonRequestedByCustomer)),
+		}
+
+		res, err := refund.New(params)
+		if err != nil {
+			helpers.Log(logrus.ErrorLevel, fmt.Sprintf("Stripe Refund Failed: %v", err))
+			return err
+		}
+
+		helpers.Log(logrus.InfoLevel, fmt.Sprintf("Stripe Refund processed. ID: %s", res.ID))
+
+		remainingToRefund -= refundAmount
+	}
 
 	return nil
 }
