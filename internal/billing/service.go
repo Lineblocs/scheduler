@@ -667,6 +667,30 @@ func (s *BillingService) processReloadCredits(task models.BillingTask, logger *l
 	defer insertStmt.Close()
 
 	_, err = insertStmt.Exec(now, now, task.CreatorID, amount, "AUTO_TOPUP", amount, cardID, "APPROVED", task.WorkspaceID, deduplicationKey)
+	if err != nil {
+		logger.WithError(err).Error("failed to insert topup credits record")
+		return err
+	}
+
+	topupMsg := map[string]interface{}{
+		"workspace_id":    task.WorkspaceID,
+		"was_topped_up":   true,
+		"topup_amount":    float64(amount) / 100.0,
+		"current_balance": 0.0, // Assuming 0 or calculate properly.
+		"threshold":       0.0, // Assuming 0 or calculate.
+	}
+
+	msgBytes, err := json.Marshal(topupMsg)
+	if err == nil {
+		if pubErr := s.rabbitmqPublisher.Publish("pay_as_you_go_topups", msgBytes); pubErr != nil {
+			logger.WithError(pubErr).Warn("Failed to publish successful top up alert")
+		} else {
+			logger.Infof("Published successful top up alert to queue 'pay_as_you_go_topups' for workspace %d", task.WorkspaceID)
+		}
+	} else {
+		logger.WithError(err).Error("Failed to marshal top up alert message")
+	}
+
 	return err
 }
 
