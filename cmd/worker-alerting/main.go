@@ -94,6 +94,31 @@ func NewBalanceCheckAlertHandler(db *sql.DB, rdb *redis.Client, pub *billing.Gen
 func (h *BalanceCheckAlertHandler) Handle(ctx context.Context, task AlertTask) error {
 	log.Printf("[Alerts] Starting BalanceCheckAlertHandler for workspace %d", task.WorkspaceID)
 
+	throttleDurStr := os.Getenv("BALANCE_CHECK_THROTTLE_DUR")
+	throttleDur := 5 * time.Minute
+	if throttleDurStr != "" {
+		if parsedDur, err := time.ParseDuration(throttleDurStr); err == nil {
+			throttleDur = parsedDur
+		}
+	}
+
+	throttleKey := fmt.Sprintf("alert:throttle:balance_check:%d", task.WorkspaceID)
+	throttleSet, err := h.rdb.SetNX(ctx, throttleKey, "1", throttleDur).Result()
+	if err != nil {
+		return fmt.Errorf("redis failure during throttle lock check: %w", err)
+	}
+	if !throttleSet {
+		ttl, err := h.rdb.TTL(ctx, throttleKey).Result()
+		if err != nil {
+			return fmt.Errorf("redis failure getting ttl: %w", err)
+		}
+		if ttl > 0 {
+			log.Printf("[Alerts] Throttled: Balance check already performed recently for workspace %d. Waiting %v for timeout.", task.WorkspaceID, ttl)
+			time.Sleep(ttl)
+		}
+		h.rdb.Set(ctx, throttleKey, "1", throttleDur)
+	}
+
 	workspace, err := helpers.GetWorkspaceFromDB(task.WorkspaceID)
 	if err != nil {
 		log.Printf("[Alerts] Workspace %d not found for low balance check. Skipping. Error: %v", task.WorkspaceID, err)
@@ -118,7 +143,12 @@ func (h *BalanceCheckAlertHandler) Handle(ctx context.Context, task AlertTask) e
 	enableAlerts := sub.AutoTopupEnabled
 	log.Printf("[Alerts] Workspace %d alert threshold: %f, enableAlerts: %t", task.WorkspaceID, alertThreshold, enableAlerts)
 
-	alertKey := fmt.Sprintf("alert:low_balance:%d", task.WorkspaceID)
+	// Examples of time.Now().Truncate(10 * time.Minute):
+	// 14:05:30 -> 14:00:00
+	// 14:19:59 -> 14:10:00
+	// 14:31:01 -> 14:30:00
+	truncatedTime := time.Now().Truncate(10 * time.Minute)
+	alertKey := fmt.Sprintf("alert:low_balance:%d:%d", task.WorkspaceID, truncatedTime.Unix())
 	log.Printf("[Alerts] Alert key: %s", alertKey)
 
 	// Clear flag if balance recovers above threshold
@@ -175,8 +205,15 @@ func (h *BalanceCheckAlertHandler) Handle(ctx context.Context, task AlertTask) e
 	// 2. Dispatch Billing Task for Top-Up
 	log.Printf("[Alerts] Constructing billing payload for top-up, workspace %d", task.WorkspaceID)
 	billingPayload := map[string]interface{}{
-		"action":       "RELOAD_CREDITS",
-		"workspace_id": task.WorkspaceID,
+		"run_id":            fmt.Sprintf("reload_credits_%d_%d", workspace.CreatorId, time.Now().Unix()),
+		"billing_type":      "MONTHLY",
+		"workspace_id":      task.WorkspaceID,
+		"subscription_id":   sub.Id,
+		"creator_id":        workspace.CreatorId,
+		"action":            "RELOAD_CREDITS",
+		"amount":            0, // Top-up amount
+		"plan_to_bill":      sub.CurrentPlanId,
+		"next_billing_date": nil,
 	}
 	billingBytes, err := json.Marshal(billingPayload)
 	if err != nil {
