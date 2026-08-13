@@ -180,7 +180,7 @@ func (s *RecordingService) ProcessRecording(task models.RecordingTask) error {
 	}
 
 	// 4. Update Database
-	_, err = s.db.Exec("UPDATE recordings SET s3_url = ?, status='FINALIZED' WHERE id = ?", s3Url, task.ID)
+	_, err = s.db.Exec("UPDATE recordings SET s3_url = ?, s3_key = ?, status='FINALIZED' WHERE id = ?", s3Url, filename, task.ID)
 	if err != nil {
 		fmt.Printf("failed to update database status to FINALIZED: %v\n", err)
 		return fmt.Errorf("failed to update database: %w", err)
