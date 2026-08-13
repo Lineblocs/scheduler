@@ -26,6 +26,8 @@ github.com/Lineblocs/go-helpers v0.0.4-0.20260811214049-b7a02176a4d8 h1:JzAi42RW
 github.com/Lineblocs/go-helpers v0.0.4-0.20260811214049-b7a02176a4d8/go.mod h1:URpye7EwegAN5PPq3Vy1DbX77qNkjq+OL4P3Hom8r/k=
 github.com/Lineblocs/go-helpers v0.0.4-0.20260811220642-3dddd9bca176 h1:KoiepXrBw+E/QNiA91h9enAdol4+XzLZy/z27ffyqyQ=
 github.com/Lineblocs/go-helpers v0.0.4-0.20260811220642-3dddd9bca176/go.mod h1:URpye7EwegAN5PPq3Vy1DbX77qNkjq+OL4P3Hom8r/k=
+github.com/Lineblocs/go-helpers v0.0.4-0.20260813185404-1a125458d360 h1:km4USmplx4QcL8voDPIzMDz2ULEDUoWxG1o8YilV+ZA=
+github.com/Lineblocs/go-helpers v0.0.4-0.20260813185404-1a125458d360/go.mod h1:URpye7EwegAN5PPq3Vy1DbX77qNkjq+OL4P3Hom8r/k=
 github.com/aws/aws-sdk-go v1.55.8 h1:JRmEUbU52aJQZ2AjX4q4Wu7t4uZjOu71uyNmaWlUkJQ=
 github.com/aws/aws-sdk-go v1.55.8/go.mod h1:ZkViS9AqA6otK+JBBNH2++sx1sgxrPKcSzPPvQkUtXk=
 github.com/aws/aws-sdk-go-v2 v1.5.0/go.mod h1:tI4KhsR5VkzlUa2DZAdwx7wCAYGwkZZ1H31PYrBFx1w=

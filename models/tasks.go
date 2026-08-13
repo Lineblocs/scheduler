@@ -98,13 +98,15 @@ type BillingTask struct {
 }
 
 type RecordingTask struct {
-    ID              int    `json:"id"`
-    Status          string `json:"status"`
-    StorageID       string `json:"storage_id"`
-    StorageServerIP string `json:"storage_server_ip"`
-    Trim            string `json:"trim"`
-    CreateAISummary            bool `json:"trim"`
-    RelocationAttempts           int `json:"relocation_attempts"`
+    ID                    int    `json:"id"`
+    WorkspaceID           int    `json:"workspace_id"`
+    Status                string `json:"status"`
+    StorageID             string `json:"storage_id"`
+    StorageServerIP       string `json:"storage_server_ip"`
+    Trim                  string `json:"trim"`
+    CreateAISummary       bool   `json:"trim"`
+    GenerateCallAnalytics bool   `json:"generate_call_analytics"`
+    RelocationAttempts    int    `json:"relocation_attempts"`
 }
 
 type FailedBillingTask struct {

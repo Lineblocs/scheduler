@@ -403,7 +403,7 @@ func runRecordingsDistributor() {
     confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 1))
 
     query := `
-        SELECT id, status, storage_id, storage_server_ip, trim 
+        SELECT id, workspace_id, status, storage_id, storage_server_ip, trim 
         FROM recordings 
         WHERE (status = 'COMPLETED' OR status = 'FAILED') 
           AND relocation_attempts <= 3`
@@ -417,11 +417,11 @@ func runRecordingsDistributor() {
 
     count := 0
     for rows.Next() {
-        var rID int
+        var rID, workspaceID int
         var rStatus, sID, sIP string
         var trim sql.NullString
 
-        if err := rows.Scan(&rID, &rStatus, &sID, &sIP, &trim); err != nil {
+        if err := rows.Scan(&rID, &workspaceID, &rStatus, &sID, &sIP, &trim); err != nil {
             continue
         }
 
@@ -430,12 +430,26 @@ func runRecordingsDistributor() {
             continue
         }
 
+
+
+        subsWithPlan, err := helpers.GetSubscriptionFromDB(workspaceID)
+        if err != nil {
+            log.Printf("[RECORDINGS] Failed to load subscription for workspace %d: %v", workspaceID, err)
+            rdb.Del(ctx, dedupeKey)
+            continue
+        }
+
+        plan := subsWithPlan.ServicePlan
+
         task := models.RecordingTask{
             ID:              rID,
+            WorkspaceID:     workspaceID,
             Status:          rStatus,
             StorageID:       sID,
             StorageServerIP: sIP,
             Trim:            trim.String,
+            GenerateCallAnalytics: plan.VoiceAnalytics,
+
         }
 
         body, _ := json.Marshal(task)

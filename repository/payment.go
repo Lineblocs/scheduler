@@ -39,7 +39,12 @@ func (ps *PaymentService) GetServicePlans() ([]helpers.ServicePlan, error) {
 }
 
 func (ps *PaymentService) GetSubscription(subId int) (*helpers.Subscription, error) {
-	return helpers.GetSubscriptionFromDB(subId)
+	subWithPlan, err := helpers.GetSubscriptionFromDB(subId)
+	if err != nil {
+		return nil, err
+	}
+	
+	return subWithPlan.Subscription, nil
 }
 
 func (ps *PaymentService) RefundAccount(task models.BillingTask, refundCents int64, refundIDs []string, logger *logrus.Entry) error {
