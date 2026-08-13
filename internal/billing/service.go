@@ -1075,7 +1075,18 @@ func (s *BillingService) chargeWithCredits(invoiceID int64, costs *BillingCosts,
 	}
 
 	logger.Warn("Insufficient credits for payment")
+
 	s.markInvoiceChargeFailed(invoiceID, logger)
+	
+	// Suspend the account if they don't have enough credits
+	logger.Info("suspending workspace due to insufficient credits")
+	err := s.suspendWorkspace(task.WorkspaceID, int(invoiceID), "Insufficient credits for recurring payment", "SUSPENDED")
+	if err != nil {
+		logger.WithError(err).Error("could not suspend workspace")
+	} else {
+		logger.Info("workspace suspended successfully")
+	}
+
 	return fmt.Errorf("insufficient credits")
 }
 
