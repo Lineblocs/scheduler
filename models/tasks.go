@@ -174,4 +174,10 @@ type AlertMessageTask struct {
 	Action      string `json:"action"`
 }
 
+type CallFraudTask struct {
+    WorkspaceID              int       `json:"workspace_id"`
+    StartDatetimeOfFraudCheck time.Time `json:"start_datetime_of_fraud_check"`
+    AccountRiskLevel         string    `json:"account_risk_level"`
+}
+
 
