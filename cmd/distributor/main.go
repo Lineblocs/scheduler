@@ -103,6 +103,12 @@ func main() {
         runPlanMigrationsDistributor()
     })
 
+    // Register 15-minute cron job for automated call fraud screening on active workspaces
+	c.AddFunc("*/15 * * * *", func() {
+		log.Println("[PROD] Triggering Call Fraud Distributor...")
+		runCallFraudDistributor()
+	})
+
     log.Printf("Scheduler started. Redis: %s", opt.Addr)
     c.Start()
 
@@ -744,4 +750,96 @@ func runPlanMigrationsDistributor() {
     }
 
     log.Printf("[MIGRATIONS] Finished. Total Migrated: %d", count)
+}
+
+// runCallFraudDistributor queries workspaces with active outbound call traffic within the last 15 minutes,
+// verifies that their current service plan has fraud protection enabled, and enqueues validation tasks.
+func runCallFraudDistributor() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	lockKey := "call_fraud_distributor_lock"
+	locked, err := rdb.SetNX(ctx, lockKey, "running", 12*time.Minute).Result()
+	if err != nil || !locked {
+		log.Println("[CALL-FRAUD] Skip: Lock held by another instance.")
+		return
+	}
+	defer rdb.Del(ctx, lockKey)
+
+	ch, err := amqpConn.Channel()
+	if err != nil {
+		log.Printf("[CALL-FRAUD] Channel creation error: %v", err)
+		return
+	}
+	defer ch.Close()
+
+	_ = ch.Confirm(false)
+	confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 1))
+	q, _ := ch.QueueDeclare("workspace_call_fraud", true, false, false, false, nil)
+
+	// Fetch active workspaces with outbound traffic, ensuring their current service plan has fraud protection enabled (fraud_protection = 1)
+	query := `
+		SELECT DISTINCT 
+			c.workspace_id,
+			COALESCE(w.risk_level, 'LOW') as risk_level
+		FROM calls c
+		JOIN subscriptions s ON s.workspace_id = c.workspace_id AND s.status = 'ACTIVE'
+		JOIN service_plans sp ON sp.id = s.current_plan_id
+		LEFT JOIN workspaces w ON w.id = c.workspace_id
+		WHERE c.direction = 'OUTBOUND' 
+		  AND c.started_at >= NOW() - INTERVAL 15 MINUTE
+		  AND sp.fraud_protection = 1
+	`
+
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		log.Printf("[CALL-FRAUD] DB Query Error: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	checkStartTime := time.Now().Add(-15 * time.Minute)
+	count := 0
+
+	for rows.Next() {
+		var workspaceID int
+		var riskLevel string
+
+		if err := rows.Scan(&workspaceID, &riskLevel); err != nil {
+			continue
+		}
+
+		task := models.CallFraudTask{
+			WorkspaceID:              workspaceID,
+			StartDatetimeOfFraudCheck: checkStartTime,
+			AccountRiskLevel:         riskLevel,
+		}
+
+		body, _ := json.Marshal(task)
+		err = ch.PublishWithContext(ctx, "", q.Name, false, false, amqp.Publishing{
+			DeliveryMode: amqp.Persistent,
+			ContentType:  "application/json",
+			Body:         body,
+		})
+
+		if err != nil {
+			log.Printf("[CALL-FRAUD] Failed to publish task for workspace %d: %v", workspaceID, err)
+			continue
+		}
+
+		select {
+		case c := <-confirms:
+			if c.Ack {
+				count++
+			}
+		case <-time.After(3 * time.Second):
+			log.Printf("[CALL-FRAUD] Timeout waiting for ack on workspace %d", workspaceID)
+		}
+	}
+
+	if err = rows.Err(); err != nil {
+		log.Printf("[CALL-FRAUD] CRITICAL: Rows parsing issue: %v", err)
+	}
+
+	log.Printf("[CALL-FRAUD] Distributor finished. Total eligible active workspaces queued: %d", count)
 }
