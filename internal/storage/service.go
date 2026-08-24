@@ -156,11 +156,6 @@ func (s *RecordingService) ProcessRecording(task models.RecordingTask) error {
         // logic for trimming silence
     }
 
-    if task.CreateAISummary {
-        // Run AI summary generation in a separate goroutine so it doesn't block the main processing flow
-        go s.processAISummary(task)
-    }
-
     if task.GenerateCallAnalytics {
         // Run call analytics generation in a separate goroutine so it doesn't block the main processing flow
         go s.processCallAnalytics(task)
@@ -178,14 +173,30 @@ func (s *RecordingService) ProcessRecording(task models.RecordingTask) error {
         return err
     }
 
-    // 4. Update Database
+    // 4. Run AI Analysis and Save Summary to Database (Right after S3 Upload)
+    if task.CreateAISummary {
+        ctx := context.Background()
+        summary, aiErr := s.AnalyzeAudioBuffer(ctx, data)
+        if aiErr != nil {
+            fmt.Printf("Failed to analyze audio buffer for Recording ID %d: %v\n", task.ID, aiErr)
+        } else {
+            dbErr := s.SaveCallSummaryToDB(uint32(task.ID), summary)
+            if dbErr != nil {
+                fmt.Printf("Failed to save AI summary to database for Recording ID %d: %v\n", task.ID, dbErr)
+            } else {
+                fmt.Printf("Successfully saved AI summary to database for Recording ID: %d\n", task.ID)
+            }
+        }
+    }
+
+    // 5. Update Database Status
     _, err = s.db.Exec("UPDATE recordings SET s3_url = ?, s3_key = ?, status='FINALIZED' WHERE id = ?", s3Url, filename, task.ID)
     if err != nil {
         fmt.Printf("failed to update database status to FINALIZED: %v\n", err)
         return fmt.Errorf("failed to update database: %w", err)
     }
 
-    // 5. Cleanup ARI
+    // 6. Cleanup ARI
     err = (*s.ariClient).StoredRecording().Delete(src)
     if err != nil {
         fmt.Printf("failed to delete recording from ARI: %v\n", err)
@@ -193,22 +204,6 @@ func (s *RecordingService) ProcessRecording(task models.RecordingTask) error {
     }
 
     fmt.Printf("Successfully processed recording ID: %d, S3 URL: %s\n", task.ID, s3Url)
-    return nil
-}
-
-func (s *RecordingService) processAISummary(task models.RecordingTask) error {
-    fmt.Printf("Generating AI summary for Recording ID: %d\n", task.ID)
-    var rawwavdata []byte
-    summary, err := s.generateAISummary(task.ID, rawwavdata)
-    if err != nil {
-        fmt.Printf("Failed to generate AI summary for Recording ID: %d, error: %v\n", task.ID, err)
-    } else {
-        // Save the summary results to our new tables
-        if err := s.saveSummaryToDB(task.ID, summary); err != nil {
-            fmt.Printf("Failed to save summary to database: %v\n", err)
-        }
-    }
-
     return nil
 }
 
@@ -478,12 +473,15 @@ func (s *RecordingService) generateAISummaryWithGemini(callid int, rawwavdata []
     return &summary, nil
 }
 
-func (s *RecordingService) saveSummaryToDB(callID int, summary *CallSummary) error {
-    tx, err := s.db.Begin()
-    if err != nil {
-        return err
+func (s *RecordingService) SaveCallSummaryToDB(callID uint32, summary *CallSummary) error {
+    if summary == nil {
+        return fmt.Errorf("summary payload is nil")
     }
 
+    tx, err := s.db.Begin()
+    if err != nil {
+        return fmt.Errorf("failed to begin transaction: %w", err)
+    }
     defer tx.Rollback()
 
     speakerMap := make(map[string]int64)
@@ -760,7 +758,9 @@ func (s *RecordingService) AnalyzeAudioBuffer(ctx context.Context, wavBuffer []b
 
     prompt := genai.Text("Analyze this audio file thoroughly. Extract: 1. All unique speakers along with their start and end talk time timestamps in float seconds. 2. Semantic chapter segmentations summarizing key conversational phases with their start times in float seconds. 3. Any concrete action items or outcomes, setting priority to low/medium/high and status to pending.")
 
-    resp, err := model.GenerateContent(ctx, genai.FileData{URI: fileData.URI}, prompt)
+    fileDataPart := genai.FileData{URI: fileData.URI}
+
+    resp, err := model.GenerateContent(ctx, fileDataPart, prompt)
     if err != nil {
         return nil, fmt.Errorf("error generating content: %w", err)
     }
